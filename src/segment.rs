@@ -155,6 +155,14 @@ impl LogSegment {
         &self.file_path
     }
 
+    /// Flushes any pending writes to disk.
+    pub fn flush(&mut self) -> Result<()> {
+        if let Some(ref mut writer) = self.writer {
+            writer.flush().map_err(Error::Io)?;
+        }
+        Ok(())
+    }
+
     /// Appends an entry to this segment.
     ///
     /// # Arguments

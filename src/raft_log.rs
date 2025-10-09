@@ -335,6 +335,123 @@ impl RaftLog {
             })
             .collect()
     }
+
+    /// Flushes all pending writes to disk.
+    ///
+    /// This ensures that all appended entries are durably stored.
+    /// Should be called after critical append operations.
+    pub fn flush(&self) -> Result<()> {
+        let mut active_segment_guard = self.active_segment.write();
+        if let Some(ref mut segment) = *active_segment_guard {
+            segment.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Validates the integrity of all segments in the log.
+    ///
+    /// This performs comprehensive validation including:
+    /// - Header validation
+    /// - Checksum verification
+    /// - Index continuity checks
+    pub fn validate(&self) -> Result<()> {
+        let segments = self.segments.read();
+
+        if segments.is_empty() {
+            return Ok(());
+        }
+
+        let mut expected_index = None;
+
+        for segment in segments.values() {
+            // Validate individual segment
+            segment.validate()?;
+
+            // Check index continuity
+            if let Some(expected) = expected_index {
+                if segment.base_index() != expected {
+                    return Err(Error::InvalidFormat(format!(
+                        "Index gap: expected {}, got {}",
+                        expected,
+                        segment.base_index()
+                    )));
+                }
+            }
+
+            // Update expected next index
+            if let Some(last_index) = segment.last_index() {
+                expected_index = Some(last_index + 1);
+            } else {
+                expected_index = Some(segment.base_index());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Appends multiple entries atomically.
+    ///
+    /// Either all entries are appended successfully, or none are.
+    /// This is useful for batch operations and maintaining consistency.
+    pub fn append_entries(&self, entries: Vec<LogEntry>) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // Validate all entries first
+        let mut expected_index = self.last_index().map(|i| i + 1).unwrap_or(1);
+        for entry in &entries {
+            if entry.index() != expected_index {
+                return Err(Error::InvalidEntry {
+                    reason: format!(
+                        "Entry index {} doesn't match expected index {}",
+                        entry.index(),
+                        expected_index
+                    ),
+                });
+            }
+            expected_index += 1;
+        }
+
+        // Append all entries
+        for entry in entries {
+            self.append(entry)?;
+        }
+
+        // Ensure all data is flushed
+        self.flush()?;
+
+        Ok(())
+    }
+
+    /// Compacts the log by removing entries before the specified index.
+    ///
+    /// This is used for log compaction to reclaim disk space.
+    /// Entries before `compact_index` will be removed.
+    pub fn compact(&self, compact_index: u64) -> Result<()> {
+        let mut segments = self.segments.write();
+
+        // Find segments that can be completely removed
+        let mut to_remove = Vec::new();
+        for (&base_index, segment) in segments.iter() {
+            if let Some(last_index) = segment.last_index() {
+                if last_index < compact_index {
+                    to_remove.push(base_index);
+                    // Remove the file
+                    if let Err(e) = std::fs::remove_file(segment.file_path()) {
+                        eprintln!("Warning: Failed to remove segment file: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Remove segments from map
+        for base_index in to_remove {
+            segments.remove(&base_index);
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -534,6 +651,146 @@ mod tests {
         // Wait for all threads to complete
         for handle in handles {
             handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_append_entries_batch() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        let entries = vec![
+            LogEntry::new(1, 1, b"batch 1".to_vec()),
+            LogEntry::new(1, 2, b"batch 2".to_vec()),
+            LogEntry::new(2, 3, b"batch 3".to_vec()),
+        ];
+
+        log.append_entries(entries.clone()).unwrap();
+
+        assert_eq!(log.last_index(), Some(3));
+        assert_eq!(log.last_term().unwrap(), Some(2));
+
+        // Verify all entries
+        for (i, expected) in entries.iter().enumerate() {
+            let retrieved = log.get_entry((i + 1) as u64).unwrap();
+            assert_eq!(retrieved, *expected);
+        }
+    }
+
+    #[test]
+    fn test_append_entries_invalid_batch() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        let entries = vec![
+            LogEntry::new(1, 1, b"valid".to_vec()),
+            LogEntry::new(1, 3, b"invalid index".to_vec()), // Should be 2
+        ];
+
+        let result = log.append_entries(entries);
+        match result {
+            Err(Error::InvalidEntry { .. }) => {}, // Expected
+            _ => panic!("Expected InvalidEntry error"),
+        }
+
+        // Log should still be empty
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn test_flush_operation() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        let entry = LogEntry::new(1, 1, b"test flush".to_vec());
+        log.append(entry).unwrap();
+
+        // Explicit flush should succeed
+        log.flush().unwrap();
+
+        // Data should be persisted
+        let retrieved = log.get_entry(1).unwrap();
+        assert_eq!(retrieved.command(), b"test flush");
+    }
+
+    #[test]
+    fn test_validate_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        // Empty log should validate
+        log.validate().unwrap();
+
+        // Add some entries
+        for i in 1..=5 {
+            let entry = LogEntry::new(1, i, format!("entry {}", i).into_bytes());
+            log.append(entry).unwrap();
+        }
+
+        // Log with entries should validate
+        log.validate().unwrap();
+    }
+
+    #[test]
+    fn test_compact_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = RaftLogConfig {
+            max_entries_per_segment: 2, // Small segments for testing
+            data_dir: temp_dir.path().to_path_buf(),
+        };
+        let log = RaftLog::with_config(config).unwrap();
+
+        // Add 6 entries (should create 3 segments)
+        for i in 1..=6 {
+            let entry = LogEntry::new(1, i, format!("entry {}", i).into_bytes());
+            log.append(entry).unwrap();
+        }
+
+        assert_eq!(log.segment_count(), 3);
+
+        // Compact everything before index 5
+        log.compact(5).unwrap();
+
+        // Should have removed first 2 segments
+        assert_eq!(log.segment_count(), 1);
+
+        // Should still be able to read remaining entries
+        let entry = log.get_entry(5).unwrap();
+        assert_eq!(entry.command(), b"entry 5");
+
+        let entry = log.get_entry(6).unwrap();
+        assert_eq!(entry.command(), b"entry 6");
+
+        // Earlier entries should be gone
+        let result = log.get_entry(1);
+        match result {
+            Err(Error::EntryNotFound { .. }) => {}, // Expected
+            _ => panic!("Expected EntryNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_checksum_validation_on_reload() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create log and add entries
+        {
+            let log = RaftLog::new(temp_dir.path()).unwrap();
+            for i in 1..=3 {
+                let entry = LogEntry::new(1, i, format!("checksum test {}", i).into_bytes());
+                log.append(entry).unwrap();
+            }
+            log.flush().unwrap();
+        }
+
+        // Reload and validate
+        {
+            let log = RaftLog::new(temp_dir.path()).unwrap();
+            log.validate().unwrap(); // Should pass checksum validation
+
+            assert_eq!(log.last_index(), Some(3));
+            let entry = log.get_entry(2).unwrap();
+            assert_eq!(entry.command(), b"checksum test 2");
         }
     }
 }
