@@ -38,6 +38,7 @@ pub use segment_header::SegmentHeader;
 
 // Module declarations - will be implemented in subsequent tasks
 mod error;
+mod io;
 mod log_entry;
 mod raft_log;
 mod segment;
