@@ -32,7 +32,7 @@
 // Re-export main types for convenience
 pub use error::{Error, Result};
 pub use log_entry::LogEntry;
-pub use raft_log::{RaftLog, RaftLogConfig};
+pub use raft_log::{LogMetadata, RaftLog, RaftLogConfig, SegmentStatistics};
 pub use segment::LogSegment;
 pub use segment_header::SegmentHeader;
 

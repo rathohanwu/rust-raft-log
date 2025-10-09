@@ -452,6 +452,211 @@ impl RaftLog {
 
         Ok(())
     }
+
+    /// Returns the current append offset for the active segment.
+    ///
+    /// This is useful for understanding the current file position
+    /// and for performance monitoring.
+    pub fn append_offset(&self) -> Option<u64> {
+        let active_segment_guard = self.active_segment.read();
+        active_segment_guard.as_ref().map(|segment| segment.append_offset)
+    }
+
+    /// Returns detailed metadata about the log.
+    pub fn metadata(&self) -> LogMetadata {
+        let segments = self.segments.read();
+        let first_index = segments.keys().next().copied();
+        let last_index = segments.values().rev().find_map(|s| s.last_index());
+        let last_term = if let Some(last_idx) = last_index {
+            self.get_entry(last_idx).ok().map(|e| e.term())
+        } else {
+            None
+        };
+
+        let total_entries: u32 = segments.values().map(|s| s.entry_count()).sum();
+        let segment_count = segments.len();
+
+        LogMetadata {
+            first_index,
+            last_index,
+            last_term,
+            total_entries,
+            segment_count,
+            append_offset: self.append_offset(),
+        }
+    }
+
+    /// Checks if the log contains an entry at the specified index.
+    pub fn contains_index(&self, index: u64) -> bool {
+        self.get_entry(index).is_ok()
+    }
+
+    /// Returns the term at the specified index, if it exists.
+    pub fn term_at(&self, index: u64) -> Result<u64> {
+        self.get_entry(index).map(|entry| entry.term())
+    }
+
+    /// Finds the last entry with the specified term.
+    ///
+    /// Returns the index of the last entry with the given term,
+    /// or None if no entry with that term exists.
+    pub fn last_index_for_term(&self, term: u64) -> Option<u64> {
+        let segments = self.segments.read();
+
+        // Search from the end backwards
+        for segment in segments.values().rev() {
+            if let Ok(entries) = segment.read_all_entries() {
+                for entry in entries.iter().rev() {
+                    if entry.term() == term {
+                        return Some(entry.index());
+                    }
+                    // If we find a term less than target, we can stop
+                    if entry.term() < term {
+                        break;
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Returns entries starting from the specified index with a limit.
+    ///
+    /// This is useful for replication where you want to send a batch
+    /// of entries but limit the size.
+    pub fn get_entries_with_limit(&self, start_index: u64, limit: usize) -> Result<Vec<LogEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = Vec::with_capacity(limit.min(1000)); // Reasonable cap
+        let mut current_index = start_index;
+
+        while entries.len() < limit {
+            match self.get_entry(current_index) {
+                Ok(entry) => {
+                    entries.push(entry);
+                    current_index += 1;
+                }
+                Err(Error::EntryNotFound { .. }) => break,
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Returns the size in bytes of entries in the specified range.
+    ///
+    /// This is useful for understanding storage usage and for
+    /// implementing size-based limits.
+    pub fn entries_size(&self, start_index: u64, end_index: u64) -> Result<usize> {
+        if start_index > end_index {
+            return Ok(0);
+        }
+
+        let mut total_size = 0;
+        for index in start_index..=end_index {
+            let entry = self.get_entry(index)?;
+            total_size += entry.serialized_size();
+        }
+
+        Ok(total_size)
+    }
+
+    /// Finds the segment containing the specified index.
+    ///
+    /// Returns the base index of the segment containing the index,
+    /// or None if no segment contains that index.
+    pub fn find_segment_for_index(&self, index: u64) -> Option<u64> {
+        let segments = self.segments.read();
+
+        for segment in segments.values() {
+            if index >= segment.base_index() {
+                if let Some(last_index) = segment.last_index() {
+                    if index <= last_index {
+                        return Some(segment.base_index());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Returns statistics about segment sizes and distribution.
+    pub fn segment_statistics(&self) -> SegmentStatistics {
+        let segments = self.segments.read();
+
+        if segments.is_empty() {
+            return SegmentStatistics::default();
+        }
+
+        let entry_counts: Vec<u32> = segments.values().map(|s| s.entry_count()).collect();
+        let total_entries: u32 = entry_counts.iter().sum();
+        let segment_count = segments.len();
+
+        let min_entries = *entry_counts.iter().min().unwrap_or(&0);
+        let max_entries = *entry_counts.iter().max().unwrap_or(&0);
+        let avg_entries = if segment_count > 0 {
+            total_entries as f64 / segment_count as f64
+        } else {
+            0.0
+        };
+
+        SegmentStatistics {
+            segment_count,
+            total_entries,
+            min_entries_per_segment: min_entries,
+            max_entries_per_segment: max_entries,
+            avg_entries_per_segment: avg_entries,
+        }
+    }
+}
+
+/// Metadata about the entire log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogMetadata {
+    /// First index in the log, if any.
+    pub first_index: Option<u64>,
+    /// Last index in the log, if any.
+    pub last_index: Option<u64>,
+    /// Term of the last entry, if any.
+    pub last_term: Option<u64>,
+    /// Total number of entries across all segments.
+    pub total_entries: u32,
+    /// Number of segments.
+    pub segment_count: usize,
+    /// Current append offset in the active segment.
+    pub append_offset: Option<u64>,
+}
+
+/// Statistics about segment distribution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SegmentStatistics {
+    /// Number of segments.
+    pub segment_count: usize,
+    /// Total entries across all segments.
+    pub total_entries: u32,
+    /// Minimum entries in any segment.
+    pub min_entries_per_segment: u32,
+    /// Maximum entries in any segment.
+    pub max_entries_per_segment: u32,
+    /// Average entries per segment.
+    pub avg_entries_per_segment: f64,
+}
+
+impl Default for SegmentStatistics {
+    fn default() -> Self {
+        Self {
+            segment_count: 0,
+            total_entries: 0,
+            min_entries_per_segment: 0,
+            max_entries_per_segment: 0,
+            avg_entries_per_segment: 0.0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -792,5 +997,194 @@ mod tests {
             let entry = log.get_entry(2).unwrap();
             assert_eq!(entry.command(), b"checksum test 2");
         }
+    }
+
+    #[test]
+    fn test_metadata_derivation() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        // Empty log metadata
+        let metadata = log.metadata();
+        assert_eq!(metadata.first_index, None);
+        assert_eq!(metadata.last_index, None);
+        assert_eq!(metadata.last_term, None);
+        assert_eq!(metadata.total_entries, 0);
+        assert_eq!(metadata.segment_count, 0);
+
+        // Add entries
+        for i in 1..=5 {
+            let term = if i <= 3 { 1 } else { 2 };
+            let entry = LogEntry::new(term, i, format!("entry {}", i).into_bytes());
+            log.append(entry).unwrap();
+        }
+
+        let metadata = log.metadata();
+        assert_eq!(metadata.first_index, Some(1));
+        assert_eq!(metadata.last_index, Some(5));
+        assert_eq!(metadata.last_term, Some(2));
+        assert_eq!(metadata.total_entries, 5);
+        assert_eq!(metadata.segment_count, 1);
+        assert!(metadata.append_offset.is_some());
+    }
+
+    #[test]
+    fn test_term_operations() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        // Add entries with different terms
+        let entries = vec![
+            LogEntry::new(1, 1, b"term1_entry1".to_vec()),
+            LogEntry::new(1, 2, b"term1_entry2".to_vec()),
+            LogEntry::new(2, 3, b"term2_entry1".to_vec()),
+            LogEntry::new(2, 4, b"term2_entry2".to_vec()),
+            LogEntry::new(3, 5, b"term3_entry1".to_vec()),
+        ];
+
+        for entry in entries {
+            log.append(entry).unwrap();
+        }
+
+        // Test term_at
+        assert_eq!(log.term_at(1).unwrap(), 1);
+        assert_eq!(log.term_at(3).unwrap(), 2);
+        assert_eq!(log.term_at(5).unwrap(), 3);
+
+        // Test last_index_for_term
+        assert_eq!(log.last_index_for_term(1), Some(2));
+        assert_eq!(log.last_index_for_term(2), Some(4));
+        assert_eq!(log.last_index_for_term(3), Some(5));
+        assert_eq!(log.last_index_for_term(4), None); // Non-existent term
+    }
+
+    #[test]
+    fn test_contains_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        // Empty log
+        assert!(!log.contains_index(1));
+
+        // Add some entries
+        for i in 1..=3 {
+            let entry = LogEntry::new(1, i, format!("entry {}", i).into_bytes());
+            log.append(entry).unwrap();
+        }
+
+        assert!(log.contains_index(1));
+        assert!(log.contains_index(2));
+        assert!(log.contains_index(3));
+        assert!(!log.contains_index(4));
+        assert!(!log.contains_index(0));
+    }
+
+    #[test]
+    fn test_get_entries_with_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        // Add 10 entries
+        for i in 1..=10 {
+            let entry = LogEntry::new(1, i, format!("entry {}", i).into_bytes());
+            log.append(entry).unwrap();
+        }
+
+        // Test with limit
+        let entries = log.get_entries_with_limit(3, 4).unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].index(), 3);
+        assert_eq!(entries[3].index(), 6);
+
+        // Test with limit larger than available
+        let entries = log.get_entries_with_limit(8, 10).unwrap();
+        assert_eq!(entries.len(), 3); // Only 8, 9, 10 available
+
+        // Test with zero limit
+        let entries = log.get_entries_with_limit(1, 0).unwrap();
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[test]
+    fn test_entries_size() {
+        let temp_dir = TempDir::new().unwrap();
+        let log = RaftLog::new(temp_dir.path()).unwrap();
+
+        // Add entries with known sizes
+        let entries = vec![
+            LogEntry::new(1, 1, b"small".to_vec()),      // 5 bytes command
+            LogEntry::new(1, 2, b"medium data".to_vec()), // 11 bytes command
+            LogEntry::new(1, 3, b"larger command data".to_vec()), // 20 bytes command
+        ];
+
+        for entry in &entries {
+            log.append(entry.clone()).unwrap();
+        }
+
+        // Test size calculation
+        let size = log.entries_size(1, 3).unwrap();
+        let expected_size = entries.iter().map(|e| e.serialized_size()).sum::<usize>();
+        assert_eq!(size, expected_size);
+
+        // Test partial range
+        let size = log.entries_size(2, 2).unwrap();
+        assert_eq!(size, entries[1].serialized_size());
+
+        // Test invalid range
+        let size = log.entries_size(5, 3).unwrap();
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn test_find_segment_for_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = RaftLogConfig {
+            max_entries_per_segment: 3,
+            data_dir: temp_dir.path().to_path_buf(),
+        };
+        let log = RaftLog::with_config(config).unwrap();
+
+        // Add 7 entries (should create 3 segments: 1-3, 4-6, 7)
+        for i in 1..=7 {
+            let entry = LogEntry::new(1, i, format!("entry {}", i).into_bytes());
+            log.append(entry).unwrap();
+        }
+
+        // Test segment finding
+        assert_eq!(log.find_segment_for_index(1), Some(1));
+        assert_eq!(log.find_segment_for_index(3), Some(1));
+        assert_eq!(log.find_segment_for_index(4), Some(4));
+        assert_eq!(log.find_segment_for_index(6), Some(4));
+        assert_eq!(log.find_segment_for_index(7), Some(7));
+        assert_eq!(log.find_segment_for_index(8), None); // Doesn't exist
+        assert_eq!(log.find_segment_for_index(0), None); // Before first
+    }
+
+    #[test]
+    fn test_segment_statistics() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = RaftLogConfig {
+            max_entries_per_segment: 3,
+            data_dir: temp_dir.path().to_path_buf(),
+        };
+        let log = RaftLog::with_config(config).unwrap();
+
+        // Empty log
+        let stats = log.segment_statistics();
+        assert_eq!(stats.segment_count, 0);
+        assert_eq!(stats.total_entries, 0);
+
+        // Add 8 entries (segments: 3, 3, 2)
+        for i in 1..=8 {
+            let entry = LogEntry::new(1, i, format!("entry {}", i).into_bytes());
+            log.append(entry).unwrap();
+        }
+
+        let stats = log.segment_statistics();
+        assert_eq!(stats.segment_count, 3);
+        assert_eq!(stats.total_entries, 8);
+        assert_eq!(stats.min_entries_per_segment, 2);
+        assert_eq!(stats.max_entries_per_segment, 3);
+        assert!((stats.avg_entries_per_segment - 8.0/3.0).abs() < 0.001);
     }
 }

@@ -27,7 +27,7 @@ pub struct LogSegment {
     /// Segment header with metadata.
     header: SegmentHeader,
     /// Current append offset in the file.
-    append_offset: u64,
+    pub(crate) append_offset: u64,
     /// File handle for writing (opened lazily).
     writer: Option<BufWriter<File>>,
 }
