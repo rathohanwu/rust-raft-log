@@ -1,0 +1,40 @@
+[package]
+name = "rust-raft-log"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A high-performance Raft log implementation in Rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/rust-raft-log"
+keywords = ["raft", "consensus", "distributed", "log", "storage"]
+categories = ["database", "data-structures"]
+
+[dependencies]
+# Error handling
+thiserror = "1.0"
+
+# Checksums
+crc32fast = "1.3"
+
+# Binary I/O with endianness support
+byteorder = "1.5"
+
+# High-performance synchronization primitives
+parking_lot = "0.12"
+
+[dev-dependencies]
+# Testing utilities
+tempfile = "3.8"
+proptest = "1.4"
+
+[lib]
+name = "raft_log"
+path = "src/lib.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+debug = true
