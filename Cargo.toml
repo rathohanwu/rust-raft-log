@@ -26,10 +26,15 @@ parking_lot = "0.12"
 # Testing utilities
 tempfile = "3.8"
 proptest = "1.4"
+rand = "0.8"
 
 [lib]
 name = "raft_log"
 path = "src/lib.rs"
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
 
 [profile.release]
 lto = true

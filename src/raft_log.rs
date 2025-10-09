@@ -287,12 +287,27 @@ impl RaftLog {
             return Ok(Vec::new());
         }
 
-        let mut entries = Vec::new();
-        for index in start_index..=end_index {
-            entries.push(self.get_entry(index)?);
+        // Check if log is empty or range is outside bounds
+        if let Some(first_index) = self.first_index() {
+            if let Some(last_index) = self.last_index() {
+                if start_index > last_index || end_index < first_index {
+                    return Ok(Vec::new());
+                }
+
+                // Clamp the range to actual bounds
+                let actual_start = start_index.max(first_index);
+                let actual_end = end_index.min(last_index);
+
+                let mut entries = Vec::new();
+                for index in actual_start..=actual_end {
+                    entries.push(self.get_entry(index)?);
+                }
+                return Ok(entries);
+            }
         }
 
-        Ok(entries)
+        // Empty log
+        Ok(Vec::new())
     }
 
     /// Gets all entries from the specified index to the end of the log.
@@ -502,23 +517,20 @@ impl RaftLog {
     /// or None if no entry with that term exists.
     pub fn last_index_for_term(&self, term: u64) -> Option<u64> {
         let segments = self.segments.read();
+        let mut last_found_index = None;
 
-        // Search from the end backwards
-        for segment in segments.values().rev() {
+        // Search through all segments and entries
+        for segment in segments.values() {
             if let Ok(entries) = segment.read_all_entries() {
-                for entry in entries.iter().rev() {
+                for entry in entries.iter() {
                     if entry.term() == term {
-                        return Some(entry.index());
-                    }
-                    // If we find a term less than target, we can stop
-                    if entry.term() < term {
-                        break;
+                        last_found_index = Some(entry.index());
                     }
                 }
             }
         }
 
-        None
+        last_found_index
     }
 
     /// Returns entries starting from the specified index with a limit.
