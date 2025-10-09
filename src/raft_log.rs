@@ -12,11 +12,11 @@ pub struct RaftLog {
 impl RaftLog {
     /// Creates a new Raft log.
     pub fn new(_data_dir: &str) -> Result<Self> {
-        Err(Error::Placeholder)
+        Err(Error::InvalidFormat("Not implemented yet".to_string()))
     }
 
     /// Appends an entry to the log.
     pub fn append(&self, _entry: LogEntry) -> Result<()> {
-        Err(Error::Placeholder)
+        Err(Error::InvalidFormat("Not implemented yet".to_string()))
     }
 }

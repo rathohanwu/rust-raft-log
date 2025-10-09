@@ -12,6 +12,6 @@ pub struct LogSegment {
 impl LogSegment {
     /// Creates a new log segment.
     pub fn new() -> Result<Self> {
-        Err(Error::Placeholder)
+        Err(Error::InvalidFormat("Not implemented yet".to_string()))
     }
 }
