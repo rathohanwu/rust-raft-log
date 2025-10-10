@@ -21,6 +21,8 @@ byteorder = "1.5"
 
 # High-performance synchronization primitives
 parking_lot = "0.12"
+memmap2 = "0.9.8"
+log = "0.4.28"
 
 [dev-dependencies]
 # Testing utilities
