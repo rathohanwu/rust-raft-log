@@ -1,5 +1,6 @@
-use crate::log::segment::LogSegment;
-use crate::log::utils::{read_u64, write_u64, BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET};
+use super::mmap_utils::MemoryMapUtil;
+use super::segment::LogSegment;
+use super::utils::{BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET};
 
 /// Header for a log segment file.
 ///
@@ -19,41 +20,30 @@ use crate::log::utils::{read_u64, write_u64, BASE_INDEX_OFFSET, ENTRY_COUNT_OFFS
 /// - **Entry Count**: Number of entries in this segment
 /// - **Checksum**: CRC32 of the entire file
 
-pub trait LogSegmentHeader {
-    fn get_last_index(&self) -> Option<u64>;
-    fn get_base_index(&self) -> Option<u64>;
-    fn get_entry_count(&self) -> Option<u64>;
-    fn set_base_index(&mut self, base_index: u64) -> bool;
-    fn set_entry_count(&mut self, entry_count: u64) -> bool;
-}
-
-impl LogSegmentHeader for LogSegment {
+impl LogSegment {
     fn get_last_index(&self) -> Option<u64> {
-        match (self.get_base_index(), self.get_entry_count()) {
-            (Some(base_index), Some(entry_count)) => {
-                if entry_count == 0 {
-                    Some(base_index)
-                } else {
-                    Some(base_index + entry_count - 1)
-                }
-            }
-            _ => None,
+        let base_index = self.get_base_index();
+        let entry_count = self.get_entry_count();
+        if entry_count == 0 {
+            None
+        } else {
+            Some(base_index + entry_count - 1)
         }
     }
-    fn get_base_index(&self) -> Option<u64> {
-        read_u64(&self.buffer, BASE_INDEX_OFFSET)
+    pub fn get_base_index(&self) -> u64 {
+        MemoryMapUtil::read_u64(&self.buffer, BASE_INDEX_OFFSET)
     }
 
-    fn get_entry_count(&self) -> Option<u64> {
-        read_u64(&self.buffer, ENTRY_COUNT_OFFSET)
+    pub fn get_entry_count(&self) -> u64 {
+        MemoryMapUtil::read_u64(&self.buffer, ENTRY_COUNT_OFFSET)
     }
 
-    fn set_base_index(&mut self, base_index: u64) -> bool {
-        write_u64(&mut self.buffer, BASE_INDEX_OFFSET, base_index)
+    pub fn set_base_index(&mut self, base_index: u64) {
+        MemoryMapUtil::write_u64(&mut self.buffer, BASE_INDEX_OFFSET, base_index);
     }
 
-    fn set_entry_count(&mut self, entry_count: u64) -> bool {
-        write_u64(&mut self.buffer, ENTRY_COUNT_OFFSET, entry_count)
+    pub fn set_entry_count(&mut self, entry_count: u64) {
+        MemoryMapUtil::write_u64(&mut self.buffer, ENTRY_COUNT_OFFSET, entry_count);
     }
 }
 
@@ -67,16 +57,16 @@ mod tests {
             .expect("should be opened the file");
         let mut log_segment = LogSegment::new(memory_map, 20);
 
-        let base_index = log_segment.get_base_index().unwrap();
+        let base_index = log_segment.get_base_index();
         assert_eq!(20, base_index);
         log_segment.set_base_index(40);
-        let new_base_index = log_segment.get_base_index().unwrap();
+        let new_base_index = log_segment.get_base_index();
         assert_eq!(40, new_base_index);
 
-        let entry_count = log_segment.get_entry_count().unwrap();
+        let entry_count = log_segment.get_entry_count();
         assert_eq!(0, entry_count);
         log_segment.set_entry_count(30);
-        let new_entry_count = log_segment.get_entry_count().unwrap();
+        let new_entry_count = log_segment.get_entry_count();
         assert_eq!(30, new_entry_count);
 
         let last_index = log_segment.get_last_index().unwrap();

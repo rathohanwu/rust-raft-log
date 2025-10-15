@@ -4,6 +4,8 @@ use std::fs::OpenOptions;
 use std::io;
 use std::io::{Error, Write};
 
+
+
 pub fn create_memory_mapped_file(file_path: &str, size: u64) -> Result<MmapMut, Error> {
     let file = OpenOptions::new()
         .read(true)
@@ -42,5 +44,5 @@ pub fn read_u64(buffer: &MmapMut, offset: u64) -> Option<u64> {
 }
 
 pub const HEADER_SIZE: usize = 24;
-pub const BASE_INDEX_OFFSET: u64 = 8;
-pub const ENTRY_COUNT_OFFSET: u64 = 16;
+pub const BASE_INDEX_OFFSET: usize = 8;
+pub const ENTRY_COUNT_OFFSET: usize = 16;
