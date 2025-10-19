@@ -1,5 +1,5 @@
 use super::mmap_utils::MemoryMapUtil;
-use super::segment::LogSegment;
+use super::log_file_segment::LogFileSegment;
 use super::utils::{BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET};
 
 /// Header for a log segment file.
@@ -20,7 +20,7 @@ use super::utils::{BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET};
 /// - **Entry Count**: Number of entries in this segment
 /// - **Checksum**: CRC32 of the entire file
 
-impl LogSegment {
+impl LogFileSegment {
     fn get_last_index(&self) -> Option<u64> {
         let base_index = self.get_base_index();
         let entry_count = self.get_entry_count();
@@ -55,7 +55,7 @@ mod tests {
     fn should_return_correct_first_index_and_entry_count() {
         let memory_map = create_memory_mapped_file("log-segment-0000001.dat", 100)
             .expect("should be opened the file");
-        let mut log_segment = LogSegment::new(memory_map, 20);
+        let mut log_segment = LogFileSegment::new(memory_map, 20);
 
         let base_index = log_segment.get_base_index();
         assert_eq!(20, base_index);

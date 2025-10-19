@@ -5,14 +5,14 @@ use memmap2::MmapMut;
 use std::io;
 use std::io::{Cursor, Read, Write};
 
-pub struct LogSegment {
+pub struct LogFileSegment {
     pub buffer: MmapMut,
 }
 
-impl LogSegment {
+impl LogFileSegment {
     pub fn new(mut memory_map: MmapMut, base_index: u64) -> Self {
         memory_map[0..0 + 8].copy_from_slice(&base_index.to_le_bytes());
-        let mut log_segment = LogSegment { buffer: memory_map };
+        let mut log_segment = LogFileSegment { buffer: memory_map };
 
         let _ = log_segment.initialize_header_for_new_log_segment(base_index);
         log_segment
@@ -30,11 +30,11 @@ impl LogSegment {
     }
 }
 
-impl LogSegment {
+impl LogFileSegment {
     fn append_try(&mut self, log_entry: LogEntry) {
         // length of payload + term (8 bytes) + index (8 bytes)
         let total_payload_size = log_entry.payload.len() as u64 + 8 + 8 + 8;
-        let mut start_append_position = 0;
+        let start_append_position;
         {
             let mut cursor = io::Cursor::new(&self.buffer[HEADER_SIZE..]);
             start_append_position = find_start_append_position(&mut cursor, log_entry.index);
@@ -99,7 +99,7 @@ mod tests {
         let memory_map = create_memory_mapped_file("log-segment-0000001.dat", 100)
             .expect("should be opened the file");
 
-        let mut log_segment = LogSegment::new(memory_map, 1);
+        let mut log_segment = LogFileSegment::new(memory_map, 1);
         assert_eq!(0, log_segment.get_entry_count());
 
         log_segment.append_try(LogEntry::new(1, 1, "this is han1".as_bytes().to_vec()));
