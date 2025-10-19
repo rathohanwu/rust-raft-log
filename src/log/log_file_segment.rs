@@ -1,53 +1,50 @@
-use super::entry::LogEntry;
+use super::models::LogEntry;
 use super::utils::HEADER_SIZE;
+use crate::log::mmap_utils::MemoryMapUtil;
 use byteorder::{LittleEndian, ReadBytesExt};
 use memmap2::MmapMut;
 use std::io;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 
 pub struct LogFileSegment {
     pub buffer: MmapMut,
 }
 
 impl LogFileSegment {
-    pub fn new(mut memory_map: MmapMut, base_index: u64) -> Self {
-        memory_map[0..0 + 8].copy_from_slice(&base_index.to_le_bytes());
+    pub fn new(memory_map: MmapMut, base_index: u64) -> Self {
         let mut log_segment = LogFileSegment { buffer: memory_map };
-
-        let _ = log_segment.initialize_header_for_new_log_segment(base_index);
+        log_segment.initialize_header_for_new_log_segment(base_index);
         log_segment
     }
 
-    fn initialize_header_for_new_log_segment(&mut self, base_index: u64) -> io::Result<()> {
-        let version: i32 = 1;
-        let mut cursor = io::Cursor::new(&mut self.buffer[..HEADER_SIZE]);
-        cursor.write_all("RAFT".as_bytes())?;
-        cursor.write_all(&version.to_le_bytes())?;
+    fn initialize_header_for_new_log_segment(&mut self, base_index: u64) {
+        let version: u32 = 1;
+        self.set_magic();
+        self.set_version(version);
         self.set_base_index(base_index);
         self.set_entry_count(0);
-
-        Ok(())
+        self.set_start_append_position(HEADER_SIZE as u64);
     }
 }
 
 impl LogFileSegment {
     fn append_try(&mut self, log_entry: LogEntry) {
-        // length of payload + term (8 bytes) + index (8 bytes)
-        let total_payload_size = log_entry.payload.len() as u64 + 8 + 8 + 8;
-        let start_append_position;
-        {
-            let mut cursor = io::Cursor::new(&self.buffer[HEADER_SIZE..]);
-            start_append_position = find_start_append_position(&mut cursor, log_entry.index);
-        }
-        let mut cursor = io::Cursor::new(&mut self.buffer[HEADER_SIZE..]);
-        cursor.set_position(start_append_position);
-        cursor.write_all(&total_payload_size.to_le_bytes());
-        cursor.write_all(&log_entry.term.to_le_bytes());
-        cursor.write_all(&log_entry.index.to_le_bytes());
-        cursor.write_all(&log_entry.payload);
-
+        let start_append_position = self.get_start_append_position();
+        let next_start_append_position = self.write_payload(start_append_position, &log_entry);
+        self.set_start_append_position(next_start_append_position);
         let entry_count = self.get_entry_count();
         self.set_entry_count(entry_count + 1);
+    }
+
+    fn write_payload(self: &mut Self, start_position: u64, log_entry: &LogEntry) -> u64 {
+        let start_position = start_position as usize;
+        let buffer = &mut self.buffer;
+        let total_payload_size = log_entry.payload.len() as u64 + 8 + 8 + 8;
+        MemoryMapUtil::write_u64(buffer, start_position, total_payload_size);
+        MemoryMapUtil::write_u64(buffer, start_position + 8, log_entry.term);
+        MemoryMapUtil::write_u64(buffer, start_position + 16, log_entry.index);
+        MemoryMapUtil::write_vec_8(buffer, start_position + 24, &log_entry.payload);
+        start_position as u64 + total_payload_size
     }
 
     fn get_entry_at(&mut self, index: u64) -> Option<LogEntry> {
@@ -96,7 +93,7 @@ mod tests {
     use crate::log::utils::create_memory_mapped_file;
     #[test]
     fn should_return_correct_first_index_and_entry_count() {
-        let memory_map = create_memory_mapped_file("log-segment-0000001.dat", 100)
+        let memory_map = create_memory_mapped_file("log-segment-0000001.dat", 10_000)
             .expect("should be opened the file");
 
         let mut log_segment = LogFileSegment::new(memory_map, 1);

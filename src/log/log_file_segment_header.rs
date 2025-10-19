@@ -1,6 +1,9 @@
-use super::mmap_utils::MemoryMapUtil;
 use super::log_file_segment::LogFileSegment;
-use super::utils::{BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET};
+use super::mmap_utils::MemoryMapUtil;
+use super::utils::{
+    BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET, MAGIC_OFFSET, START_APPEND_POSITION_OFFSET,
+    VERSION_OFFSET,
+};
 
 /// Header for a log segment file.
 ///
@@ -38,12 +41,32 @@ impl LogFileSegment {
         MemoryMapUtil::read_u64(&self.buffer, ENTRY_COUNT_OFFSET)
     }
 
+    pub fn set_magic(&mut self) {
+        MemoryMapUtil::write_vec_8(&mut self.buffer, MAGIC_OFFSET, &b"RAFT".to_vec());
+    }
+
+    pub fn set_version(&mut self, version: u32) {
+        MemoryMapUtil::write_u32(&mut self.buffer, VERSION_OFFSET, version);
+    }
+
     pub fn set_base_index(&mut self, base_index: u64) {
         MemoryMapUtil::write_u64(&mut self.buffer, BASE_INDEX_OFFSET, base_index);
     }
 
     pub fn set_entry_count(&mut self, entry_count: u64) {
         MemoryMapUtil::write_u64(&mut self.buffer, ENTRY_COUNT_OFFSET, entry_count);
+    }
+
+    pub fn set_start_append_position(&mut self, start_append_position: u64) {
+        MemoryMapUtil::write_u64(
+            &mut self.buffer,
+            START_APPEND_POSITION_OFFSET,
+            start_append_position,
+        );
+    }
+
+    pub fn get_start_append_position(&self) -> u64 {
+        MemoryMapUtil::read_u64(&self.buffer, START_APPEND_POSITION_OFFSET)
     }
 }
 
