@@ -36,6 +36,11 @@ impl LogFileSegment {
         log_segment
     }
 
+    /// Creates a LogFileSegment from an existing file buffer (doesn't initialize header)
+    pub fn from_existing(buffer: MmapMut) -> Self {
+        LogFileSegment { buffer }
+    }
+
     fn initialize_header_for_new_log_segment(&mut self, base_index: u64) {
         let version: u32 = 1;
 
@@ -160,16 +165,16 @@ impl LogFileSegment {
     fn find_start_append_position(&self, index: u64) -> u64 {
         let mut cursor = Cursor::new(&self.buffer[HEADER_SIZE..]);
         let mut total_pay_load: u64 = HEADER_SIZE as u64;
-        for index in 0..index - 1 {
-            let pay_load = cursor.read_u32::<LittleEndian>();
+        for _i in 0..index - 1 {
+            let pay_load = cursor.read_u64::<LittleEndian>();
             match pay_load {
                 Err(e) => {
-                    eprintln!("Error reading payload size at index {}: {}", index, e);
-                    panic!("Error reading payload size at index {}: {}", index, e);
+                    eprintln!("Error reading payload size at index {}: {}", _i, e);
+                    panic!("Error reading payload size at index {}: {}", _i, e);
                 }
                 Ok(entry_size) => {
-                    total_pay_load += entry_size as u64;
-                    cursor.set_position(total_pay_load);
+                    total_pay_load += entry_size;
+                    cursor.set_position(total_pay_load - HEADER_SIZE as u64);
                 }
             }
         }
