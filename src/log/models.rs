@@ -12,4 +12,13 @@ impl LogEntry {
             payload,
         }
     }
+
+    pub fn calculate_total_size(&self) -> u64 {
+        self.payload.len() as u64 + 8 + 8 + 8
+    }
+}
+
+pub enum AppendResult {
+    Success,
+    RotationNeeded,
 }

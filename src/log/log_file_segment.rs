@@ -1,7 +1,7 @@
-use super::models::LogEntry;
+use super::models::{AppendResult, LogEntry};
 use super::utils::{
-    HEADER_SIZE, BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET, MAGIC_OFFSET,
-    START_APPEND_POSITION_OFFSET, VERSION_OFFSET,
+    BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET, HEADER_SIZE, MAGIC_OFFSET, START_APPEND_POSITION_OFFSET,
+    VERSION_OFFSET,
 };
 use crate::log::mmap_utils::MemoryMapUtil;
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -87,16 +87,27 @@ impl LogFileSegment {
     }
 
     fn set_start_append_position(&mut self, start_append_position: u64) {
-        MemoryMapUtil::write_u64(&mut self.buffer, START_APPEND_POSITION_OFFSET, start_append_position);
+        MemoryMapUtil::write_u64(
+            &mut self.buffer,
+            START_APPEND_POSITION_OFFSET,
+            start_append_position,
+        );
     }
 
     // Log entry operations
-    pub fn append_try(&mut self, log_entry: LogEntry) {
+    pub fn append_entry(&mut self, log_entry: LogEntry) -> AppendResult {
         let start_append_position = self.get_start_append_position();
+        let total_log_entry_size = log_entry.calculate_total_size();
+
+        if start_append_position + total_log_entry_size > self.buffer.len() as u64 {
+            return AppendResult::RotationNeeded;
+        }
+
         let next_start_append_position = self.write_payload(start_append_position, &log_entry);
         self.set_start_append_position(next_start_append_position);
         let entry_count = self.get_entry_count();
         self.set_entry_count(entry_count + 1);
+        AppendResult::Success
     }
 
     pub fn truncate_from(&mut self, search_index: u64) -> bool {
@@ -115,7 +126,7 @@ impl LogFileSegment {
     // Private helper methods
     fn write_payload(&mut self, start_position: u64, log_entry: &LogEntry) -> u64 {
         let start_position = start_position as usize;
-        let total_payload_size = log_entry.payload.len() as u64 + 8 + 8 + 8;
+        let total_payload_size = log_entry.calculate_total_size();
         MemoryMapUtil::write_u64(&mut self.buffer, start_position, total_payload_size);
         MemoryMapUtil::write_u64(&mut self.buffer, start_position + 8, log_entry.term);
         MemoryMapUtil::write_u64(&mut self.buffer, start_position + 16, log_entry.index);
@@ -137,7 +148,11 @@ impl LogFileSegment {
         let term = MemoryMapUtil::read_u64(&self.buffer, start_position + 8);
         let index = MemoryMapUtil::read_u64(&self.buffer, start_position + 16);
 
-        let payload = MemoryMapUtil::read_vec_8(&self.buffer, start_position + 24, (payload_size - 24) as usize);
+        let payload = MemoryMapUtil::read_vec_8(
+            &self.buffer,
+            start_position + 24,
+            (payload_size - 24) as usize,
+        );
 
         Some(LogEntry::new(term, index, payload))
     }
@@ -166,6 +181,37 @@ impl LogFileSegment {
 mod tests {
     use super::*;
     use crate::log::utils::create_memory_mapped_file;
+
+    #[test]
+    fn should_return_rotated_needed_result() {
+        let memory_map = create_memory_mapped_file("log-segment-0000010.dat", 67)
+            .expect("should be opened the file");
+
+        let mut log_segment = LogFileSegment::new(memory_map, 1);
+        let result =
+            log_segment.append_entry(LogEntry::new(1, 1, "this is han1".as_bytes().to_vec()));
+
+        match result {
+            AppendResult::Success => panic!("should be rotation needed"),
+            AppendResult::RotationNeeded => {}
+        }
+    }
+
+    #[test]
+    fn should_return_success_result() {
+        let memory_map = create_memory_mapped_file("log-segment-0000011.dat", 68)
+            .expect("should be opened the file");
+
+        let mut log_segment = LogFileSegment::new(memory_map, 1);
+        let result =
+            log_segment.append_entry(LogEntry::new(1, 1, "this is han1".as_bytes().to_vec()));
+
+        match result {
+            AppendResult::Success => {}
+            AppendResult::RotationNeeded => panic!("should be successful needed"),
+        }
+    }
+
     #[test]
     fn should_return_correct_first_index_and_entry_count() {
         let memory_map = create_memory_mapped_file("log-segment-0000001.dat", 10_000)
@@ -174,10 +220,10 @@ mod tests {
         let mut log_segment = LogFileSegment::new(memory_map, 1);
         assert_eq!(0, log_segment.get_entry_count());
 
-        log_segment.append_try(LogEntry::new(1, 1, "this is han1".as_bytes().to_vec()));
+        log_segment.append_entry(LogEntry::new(1, 1, "this is han1".as_bytes().to_vec()));
         assert_eq!(1, log_segment.get_entry_count());
 
-        log_segment.append_try(LogEntry::new(1, 2, "this is han2".as_bytes().to_vec()));
+        log_segment.append_entry(LogEntry::new(1, 2, "this is han2".as_bytes().to_vec()));
         assert_eq!(2, log_segment.get_entry_count());
 
         let log_entry_1 = log_segment.get_entry_at(1);
@@ -200,8 +246,8 @@ mod tests {
         verify_empty_log_entry(log_segment.get_entry_at(8));
 
         // Given
-        log_segment.append_try(LogEntry::new(1, 8, "this is han8".as_bytes().to_vec()));
-        log_segment.append_try(LogEntry::new(1, 9, "this is han9".as_bytes().to_vec()));
+        log_segment.append_entry(LogEntry::new(1, 8, "this is han8".as_bytes().to_vec()));
+        log_segment.append_entry(LogEntry::new(1, 9, "this is han9".as_bytes().to_vec()));
 
         // When & Then
         assert_eq!(2, log_segment.get_entry_count());
@@ -217,12 +263,12 @@ mod tests {
         let memory_map = create_memory_mapped_file("log-segment-0000003.dat", 10_000)
             .expect("should be opened the file");
         let mut log_segment = LogFileSegment::new(memory_map, 11);
-        log_segment.append_try(LogEntry::new(
+        log_segment.append_entry(LogEntry::new(
             1,
             11,
             "this is 11th data".as_bytes().to_vec(),
         ));
-        log_segment.append_try(LogEntry::new(
+        log_segment.append_entry(LogEntry::new(
             1,
             12,
             "this is 12th data".as_bytes().to_vec(),
@@ -238,7 +284,7 @@ mod tests {
         verify_log_entry(log_segment.get_entry_at(11), 1, 11, "this is 11th data");
         verify_empty_log_entry(log_segment.get_entry_at(12));
 
-        log_segment.append_try(LogEntry::new(
+        log_segment.append_entry(LogEntry::new(
             1,
             12,
             "this is new 12th data".as_bytes().to_vec(),
