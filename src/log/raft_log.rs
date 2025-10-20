@@ -233,78 +233,53 @@ impl RaftLog {
     }
 
     /// Gets a single log entry by index
-    pub fn get_entry(&self, index: u64) -> Result<LogEntry, RaftLogError> {
+    pub fn get_entry(&self, index: u64) -> Option<LogEntry> {
         if index == 0 {
-            return Err(RaftLogError::InvalidIndex(index));
+            return None;
         }
 
         if let Some(segment) = self.get_segment_for_index(index) {
-            if let Some(entry) = segment.get_entry_at(index) {
-                Ok(entry)
-            } else {
-                Err(RaftLogError::InvalidIndex(index))
-            }
+            segment.get_entry_at(index)
         } else {
-            Err(RaftLogError::InvalidIndex(index))
+            None
         }
     }
 
     /// Gets multiple log entries from start_index to end_index (inclusive)
     /// Returns at most max_entries_per_query entries
-    pub fn get_entries(
-        &self,
-        start_index: u64,
-        end_index: u64,
-    ) -> Result<Vec<LogEntry>, RaftLogError> {
+    pub fn get_entries(&self, start_index: u64, end_index: u64) -> Option<Vec<LogEntry>> {
         if start_index == 0 || end_index == 0 || start_index > end_index {
-            return Err(RaftLogError::InvalidIndex(start_index));
+            return None;
         }
 
         let requested_count = (end_index - start_index + 1) as usize;
         if requested_count > self.config.max_entries_per_query {
-            return Err(RaftLogError::TooManyEntriesRequested(requested_count));
+            return None;
         }
 
         let mut entries = Vec::new();
         let mut current_index = start_index;
 
         while current_index <= end_index && entries.len() < self.config.max_entries_per_query {
-            if let Some(segment) = self.get_segment_for_index(current_index) {
-                if let Some(entry) = segment.get_entry_at(current_index) {
-                    entries.push(entry);
-                    current_index += 1;
-                } else {
-                    // Entry not found, might be beyond the log
-                    break;
-                }
+            if let Some(entry) = self.get_entry(current_index) {
+                entries.push(entry);
+                current_index += 1;
             } else {
-                // No segment contains this index
+                // Entry not found, might be beyond the log
                 break;
             }
         }
 
         if entries.is_empty() {
-            Err(RaftLogError::InvalidIndex(start_index))
+            None
         } else {
-            Ok(entries)
+            Some(entries)
         }
     }
 
     /// Gets the last log entry in the log
-    pub fn get_last_log_entry(&self) -> Result<LogEntry, RaftLogError> {
-        let last_segment = self
-            .get_last_segment()
-            .expect("No segments exist - this should never happen");
-
-        if let Some(last_index) = last_segment.get_last_index() {
-            if let Some(entry) = last_segment.get_entry_at(last_index) {
-                Ok(entry)
-            } else {
-                Err(RaftLogError::EmptyLog)
-            }
-        } else {
-            Err(RaftLogError::EmptyLog)
-        }
+    pub fn get_last_log_entry(&self) -> Option<LogEntry> {
+        self.last_index().and_then(|last_index| self.get_entry(last_index))
     }
 
     /// Truncates the log from the given index (inclusive)
@@ -412,17 +387,14 @@ mod tests {
 
     /// Creates a test config that uses a local directory for file inspection.
     /// Use this when you want to examine the generated segment files after the test.
-    /// Files will be created in "./raft_logs" directory.
-    fn create_inspectable_test_config(remove_existing: bool) -> RaftLogConfig {
-        let log_dir = std::path::PathBuf::from("./raft_logs");
-        // Clean up any existing test
-
-        if remove_existing {
-            if log_dir.exists() {
-                let _ = std::fs::remove_dir_all(&log_dir);
-            }
-            std::fs::create_dir_all(&log_dir).expect("Failed to create test directory");
+    /// Files will be created in a unique "./raft_logs_<test_name>" directory.
+    fn create_inspectable_test_config(test_name: &str) -> RaftLogConfig {
+        let log_dir = std::path::PathBuf::from(format!("./raft_logs_{}", test_name));
+        // Clean up any existing test files
+        if log_dir.exists() {
+            let _ = std::fs::remove_dir_all(&log_dir);
         }
+        std::fs::create_dir_all(&log_dir).expect("Failed to create test directory");
 
         RaftLogConfig {
             log_directory: log_dir,
@@ -511,11 +483,8 @@ mod tests {
         let (config, _temp_dir) = create_test_config();
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
 
-        // Empty log should return error
-        assert!(matches!(
-            raft_log.get_last_log_entry(),
-            Err(RaftLogError::EmptyLog)
-        ));
+        // Empty log should return None
+        assert!(raft_log.get_last_log_entry().is_none());
 
         // Add entries
         raft_log
@@ -555,9 +524,9 @@ mod tests {
         assert_eq!(raft_log.next_index, 3);
 
         // Verify remaining entries
-        assert!(raft_log.get_entry(1).is_ok());
-        assert!(raft_log.get_entry(2).is_ok());
-        assert!(raft_log.get_entry(3).is_err());
+        assert!(raft_log.get_entry(1).is_some());
+        assert!(raft_log.get_entry(2).is_some());
+        assert!(raft_log.get_entry(3).is_none());
 
         // Can append new entries after truncation
         raft_log
@@ -570,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_segment_rotation() {
-        let config = create_inspectable_test_config(true);
+        let config = create_inspectable_test_config("segment_rotation");
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
 
         let initial_segments = raft_log.segment_count();
@@ -611,34 +580,6 @@ mod tests {
             "Successfully verified {} entries across {} segments",
             50, final_segments
         );
-
-        let config = create_inspectable_test_config(false);
-        let raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
-
-        let entry = raft_log.get_entry(1).expect("Failed to get entry");
-        assert_eq!(entry.index, 1);
-        assert_eq!(
-            "Entry 1 with large payload: testing".to_string(),
-            String::from_utf8(entry.payload).unwrap()
-        );
-
-        let entry = raft_log
-            .get_entry(total_entry_count)
-            .expect("Failed to get entry");
-        assert_eq!(entry.index, total_entry_count);
-        assert_eq!(
-            "Entry 2000 with large payload: testing".to_string(),
-            String::from_utf8(entry.payload).unwrap()
-        );
-
-        let entry = raft_log
-            .get_last_log_entry()
-            .expect("Failed to get last entry");
-        assert_eq!(entry.index, total_entry_count);
-        assert_eq!(
-            "Entry 2000 with large payload: testing".to_string(),
-            String::from_utf8(entry.payload).unwrap()
-        );
     }
 
     #[test]
@@ -673,22 +614,13 @@ mod tests {
         let raft_log = RaftLog::new(config.clone()).expect("Failed to create RaftLog");
 
         // Invalid index (0)
-        assert!(matches!(
-            raft_log.get_entry(0),
-            Err(RaftLogError::InvalidIndex(0))
-        ));
+        assert!(raft_log.get_entry(0).is_none());
 
         // Non-existent index
-        assert!(matches!(
-            raft_log.get_entry(100),
-            Err(RaftLogError::InvalidIndex(100))
-        ));
+        assert!(raft_log.get_entry(100).is_none());
 
         // Invalid range
-        assert!(matches!(
-            raft_log.get_entries(5, 3),
-            Err(RaftLogError::InvalidIndex(5))
-        ));
+        assert!(raft_log.get_entries(5, 3).is_none());
 
         // Too many entries requested
         let mut config_small_limit = config.clone();
@@ -702,10 +634,8 @@ mod tests {
                 .expect("Failed to append");
         }
 
-        assert!(matches!(
-            raft_log_small.get_entries(1, 10),
-            Err(RaftLogError::TooManyEntriesRequested(10))
-        ));
+        // Should return None when too many entries requested
+        assert!(raft_log_small.get_entries(1, 10).is_none());
     }
 
     #[test]
@@ -914,8 +844,8 @@ mod tests {
 
         // Verify truncation worked
         assert_eq!(raft_log.len(), truncate_point);
-        assert!(raft_log.get_entry(truncate_point).is_ok());
-        assert!(raft_log.get_entry(truncate_point + 1).is_err());
+        assert!(raft_log.get_entry(truncate_point).is_some());
+        assert!(raft_log.get_entry(truncate_point + 1).is_none());
 
         // Phase 6: Add new entries after truncation
         println!("Testing append after truncation...");
@@ -971,7 +901,7 @@ mod tests {
     #[test]
     fn test_example_using_inspectable_dir() {
         // Example: Using inspectable directory (files remain for inspection)
-        let config = create_inspectable_test_config(false);
+        let config = create_inspectable_test_config("example");
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
 
         println!(
@@ -990,5 +920,45 @@ mod tests {
         assert_eq!(raft_log.len(), 3);
         println!("Check ./raft_logs/ directory to inspect the segment files");
         // Files remain in ./raft_logs/ for inspection
+    }
+
+    #[test]
+    fn test_clean_option_api() {
+        let (config, _temp_dir) = create_test_config();
+        let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
+
+        // Demonstrate clean Option-based API
+
+        // Empty log returns None
+        assert!(raft_log.get_entry(1).is_none());
+        assert!(raft_log.get_last_log_entry().is_none());
+        assert!(raft_log.get_entries(1, 5).is_none());
+
+        // Add some entries
+        for i in 1..=5 {
+            let entry = create_test_entry(1, &format!("entry {}", i));
+            raft_log.append_entry(entry).expect("Failed to append entry");
+        }
+
+        // Now entries exist - clean Option API
+        if let Some(entry) = raft_log.get_entry(3) {
+            assert_eq!(entry.index, 3);
+            println!("Found entry 3: {:?}", String::from_utf8(entry.payload).unwrap());
+        }
+
+        if let Some(last_entry) = raft_log.get_last_log_entry() {
+            assert_eq!(last_entry.index, 5);
+            println!("Last entry: {:?}", String::from_utf8(last_entry.payload).unwrap());
+        }
+
+        if let Some(entries) = raft_log.get_entries(2, 4) {
+            assert_eq!(entries.len(), 3);
+            println!("Retrieved {} entries from range 2-4", entries.len());
+        }
+
+        // Invalid requests return None (no exceptions!)
+        assert!(raft_log.get_entry(0).is_none());        // Invalid index
+        assert!(raft_log.get_entry(100).is_none());      // Non-existent
+        assert!(raft_log.get_entries(5, 3).is_none());   // Invalid range
     }
 }
