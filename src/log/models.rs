@@ -84,6 +84,34 @@ impl Default for RaftLogConfig {
     }
 }
 
+/// Node identifier type
+pub type NodeId = u32;
+
+/// Server state in Raft consensus
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerState {
+    Follower = 0,
+    Candidate = 1,
+    Leader = 2,
+}
+
+impl From<u8> for ServerState {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => ServerState::Follower,
+            1 => ServerState::Candidate,
+            2 => ServerState::Leader,
+            _ => ServerState::Follower, // Default to Follower for unknown values
+        }
+    }
+}
+
+impl From<ServerState> for u8 {
+    fn from(state: ServerState) -> Self {
+        state as u8
+    }
+}
+
 /// Errors that can occur during RaftLog operations
 #[derive(Debug, PartialEq)]
 pub enum RaftLogError {
@@ -99,4 +127,15 @@ pub enum RaftLogError {
     EmptyLog,
     /// Segment file is corrupted or has invalid format
     CorruptedSegment(String),
+}
+
+/// Errors that can occur during RaftState operations
+#[derive(Debug, PartialEq)]
+pub enum RaftStateError {
+    /// Failed to create or access state file
+    StateFileError(String),
+    /// State file is corrupted or has invalid format
+    CorruptedState(String),
+    /// I/O error during state operations
+    IoError(String),
 }

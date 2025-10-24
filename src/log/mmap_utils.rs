@@ -15,6 +15,13 @@ impl MemoryMapUtil {
         memory_map[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 
+    pub fn read_u32(memory_map: &MmapMut, offset: usize) -> u32 {
+        let byte_slice = &memory_map[offset..offset + 4];
+        let mut u32_bytes: [u8; 4] = [0; 4];
+        u32_bytes.copy_from_slice(byte_slice);
+        u32::from_le_bytes(u32_bytes)
+    }
+
     pub fn write_u64(memory_map: &mut MmapMut, offset: usize, value: u64) {
         memory_map[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }

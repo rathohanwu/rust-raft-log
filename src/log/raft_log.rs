@@ -1,5 +1,6 @@
 use super::log_file_segment::LogFileSegment;
-use super::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType};
+use super::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType, ServerState, NodeId};
+use super::raft_state::{RaftState, RaftStateSnapshot};
 use super::utils::create_memory_mapped_file;
 use std::collections::BTreeMap;
 use std::fs;
@@ -1005,5 +1006,97 @@ mod tests {
         let last_entry = raft_log.get_last_log_entry().expect("Should get last entry");
         assert_eq!(last_entry.entry_type, EntryType::Normal);
         assert_eq!(last_entry.term, 2);
+    }
+
+    #[test]
+    fn test_raft_log_and_state_integration() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+
+        // Create RaftLog
+        let (config, _log_temp_dir) = create_test_config();
+        let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
+
+        // Create RaftState
+        let state_path = temp_dir.path().join("raft_state.meta");
+        let mut raft_state = RaftState::new(&state_path).expect("Failed to create RaftState");
+
+        // Simulate a Raft scenario
+
+        // 1. Start as follower in term 0
+        assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+        assert_eq!(raft_state.get_current_term(), 0);
+        assert_eq!(raft_log.len(), 0);
+
+        // 2. Receive vote request for term 1, vote for candidate 100
+        raft_state.start_new_term(1);
+        raft_state.vote_for_candidate(100).expect("Should vote successfully");
+
+        // 3. Become candidate in term 2
+        raft_state.start_new_term(2);
+        raft_state.transition_to_state(ServerState::Candidate);
+        raft_state.vote_for_candidate(999).expect("Should vote for self");
+
+        // 4. Become leader and start appending entries
+        raft_state.transition_to_state(ServerState::Leader);
+
+        // Append some log entries as leader
+        let entry1 = LogEntry::new_with_type(2, 0, EntryType::NoOp, vec![]); // Leader heartbeat
+        raft_log.append_entry(entry1).expect("Failed to append NoOp entry");
+
+        let entry2 = LogEntry::new_with_type(2, 0, EntryType::Normal, "command1".as_bytes().to_vec());
+        raft_log.append_entry(entry2).expect("Failed to append normal entry");
+
+        let entry3 = LogEntry::new_with_type(2, 0, EntryType::Normal, "command2".as_bytes().to_vec());
+        raft_log.append_entry(entry3).expect("Failed to append normal entry");
+
+        // 5. Update commit and apply indices
+        raft_state.set_commit_index(3); // All entries committed
+        raft_state.set_last_applied(2); // Applied first two entries
+
+        // 6. Verify final state
+        let state_snapshot = raft_state.get_state_snapshot();
+        assert_eq!(state_snapshot.current_term, 2);
+        assert_eq!(state_snapshot.voted_for, Some(999));
+        assert_eq!(state_snapshot.server_state, ServerState::Leader);
+        assert_eq!(state_snapshot.commit_index, 3);
+        assert_eq!(state_snapshot.last_applied, 2);
+
+        // Verify log state
+        assert_eq!(raft_log.len(), 3);
+        assert_eq!(raft_log.last_index(), Some(3));
+
+        // Verify log entries
+        let log_entry1 = raft_log.get_entry(1).expect("Should get entry 1");
+        assert_eq!(log_entry1.entry_type, EntryType::NoOp);
+        assert_eq!(log_entry1.term, 2);
+
+        let log_entry2 = raft_log.get_entry(2).expect("Should get entry 2");
+        assert_eq!(log_entry2.entry_type, EntryType::Normal);
+        assert_eq!(log_entry2.payload, "command1".as_bytes());
+
+        let log_entry3 = raft_log.get_entry(3).expect("Should get entry 3");
+        assert_eq!(log_entry3.entry_type, EntryType::Normal);
+        assert_eq!(log_entry3.payload, "command2".as_bytes());
+
+        // 7. Test persistence by reloading state
+        drop(raft_state); // Close the state file
+
+        let reloaded_state = RaftState::from_existing(&state_path).expect("Failed to reload state");
+        let reloaded_snapshot = reloaded_state.get_state_snapshot();
+
+        // Verify state persisted correctly
+        assert_eq!(reloaded_snapshot.current_term, 2);
+        assert_eq!(reloaded_snapshot.voted_for, Some(999));
+        assert_eq!(reloaded_snapshot.server_state, ServerState::Leader);
+        assert_eq!(reloaded_snapshot.commit_index, 3);
+        assert_eq!(reloaded_snapshot.last_applied, 2);
+
+        println!("✅ RaftLog and RaftState integration test completed successfully!");
+        println!("   - Final term: {}", reloaded_snapshot.current_term);
+        println!("   - Server state: {:?}", reloaded_snapshot.server_state);
+        println!("   - Log entries: {}", raft_log.len());
+        println!("   - Commit index: {}", reloaded_snapshot.commit_index);
     }
 }
