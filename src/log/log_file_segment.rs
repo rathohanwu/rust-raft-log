@@ -1,4 +1,4 @@
-use super::models::{AppendResult, LogEntry};
+use super::models::{AppendResult, LogEntry, EntryType};
 use super::utils::{
     BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET, HEADER_SIZE, MAGIC_OFFSET, START_APPEND_POSITION_OFFSET,
     VERSION_OFFSET,
@@ -135,7 +135,8 @@ impl LogFileSegment {
         MemoryMapUtil::write_u64(&mut self.buffer, start_position, total_payload_size);
         MemoryMapUtil::write_u64(&mut self.buffer, start_position + 8, log_entry.term);
         MemoryMapUtil::write_u64(&mut self.buffer, start_position + 16, log_entry.index);
-        MemoryMapUtil::write_vec_8(&mut self.buffer, start_position + 24, &log_entry.payload);
+        MemoryMapUtil::write_u8(&mut self.buffer, start_position + 24, log_entry.entry_type.clone().into());
+        MemoryMapUtil::write_vec_8(&mut self.buffer, start_position + 25, &log_entry.payload);
         start_position as u64 + total_payload_size
     }
 
@@ -152,14 +153,16 @@ impl LogFileSegment {
         let payload_size = MemoryMapUtil::read_u64(&self.buffer, start_position);
         let term = MemoryMapUtil::read_u64(&self.buffer, start_position + 8);
         let index = MemoryMapUtil::read_u64(&self.buffer, start_position + 16);
+        let entry_type_byte = MemoryMapUtil::read_u8(&self.buffer, start_position + 24);
+        let entry_type = EntryType::from(entry_type_byte);
 
         let payload = MemoryMapUtil::read_vec_8(
             &self.buffer,
-            start_position + 24,
-            (payload_size - 24) as usize,
+            start_position + 25,
+            (payload_size - 25) as usize,
         );
 
-        Some(LogEntry::new(term, index, payload))
+        Some(LogEntry::new_with_type(term, index, entry_type, payload))
     }
 
     fn find_start_append_position(&self, index: u64) -> u64 {
@@ -204,7 +207,7 @@ mod tests {
 
     #[test]
     fn should_return_success_result() {
-        let memory_map = create_memory_mapped_file("log-segment-0000011.dat", 68)
+        let memory_map = create_memory_mapped_file("log-segment-0000011.dat", 100)
             .expect("should be opened the file");
 
         let mut log_segment = LogFileSegment::new(memory_map, 1);
@@ -314,5 +317,61 @@ mod tests {
             None => {}
             Some(_) => panic!("should be none log entry"),
         }
+    }
+
+    #[test]
+    fn test_entry_type_encoding_decoding() {
+        let memory_map = create_memory_mapped_file("log-segment-entry-types.dat", 1000)
+            .expect("should be opened the file");
+
+        let mut log_segment = LogFileSegment::new(memory_map, 1);
+
+        // Test Normal entry type
+        let normal_entry = LogEntry::new_with_type(1, 1, EntryType::Normal, "normal command".as_bytes().to_vec());
+        let result = log_segment.append_entry(normal_entry.clone());
+        assert!(matches!(result, AppendResult::Success));
+
+        // Test NoOp entry type
+        let noop_entry = LogEntry::new_with_type(1, 2, EntryType::NoOp, vec![]);
+        let result = log_segment.append_entry(noop_entry.clone());
+        assert!(matches!(result, AppendResult::Success));
+
+        // Verify entries can be retrieved with correct types
+        let retrieved_normal = log_segment.get_entry_at(1).expect("Should retrieve normal entry");
+        assert_eq!(retrieved_normal.entry_type, EntryType::Normal);
+        assert_eq!(retrieved_normal.term, 1);
+        assert_eq!(retrieved_normal.index, 1);
+        assert_eq!(retrieved_normal.payload, "normal command".as_bytes());
+
+        let retrieved_noop = log_segment.get_entry_at(2).expect("Should retrieve noop entry");
+        assert_eq!(retrieved_noop.entry_type, EntryType::NoOp);
+        assert_eq!(retrieved_noop.term, 1);
+        assert_eq!(retrieved_noop.index, 2);
+        assert_eq!(retrieved_noop.payload, vec![]);
+
+        assert_eq!(log_segment.get_entry_count(), 2);
+    }
+
+    #[test]
+    fn test_entry_type_conversion() {
+        // Test EntryType to u8 conversion
+        assert_eq!(u8::from(EntryType::Normal), 0);
+        assert_eq!(u8::from(EntryType::NoOp), 1);
+
+        // Test u8 to EntryType conversion
+        assert_eq!(EntryType::from(0), EntryType::Normal);
+        assert_eq!(EntryType::from(1), EntryType::NoOp);
+        assert_eq!(EntryType::from(255), EntryType::Normal); // Unknown values default to Normal
+    }
+
+    #[test]
+    fn test_calculate_total_size_with_entry_type() {
+        let normal_entry = LogEntry::new_with_type(1, 1, EntryType::Normal, "test".as_bytes().to_vec());
+        // term (8) + index (8) + entry_type (1) + payload_size (8) + payload (4) = 29
+        assert_eq!(normal_entry.calculate_total_size(), 29);
+
+        let noop_entry = LogEntry::new_with_type(1, 1, EntryType::NoOp, vec![]);
+        // term (8) + index (8) + entry_type (1) + payload_size (8) + payload (0) = 25
+        assert_eq!(noop_entry.calculate_total_size(), 25);
     }
 }

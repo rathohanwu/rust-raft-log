@@ -1,9 +1,35 @@
 use std::path::PathBuf;
 
+/// Type of log entry for Raft consensus
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntryType {
+    /// Normal application command
+    Normal = 0,
+    /// No-operation entry for leader heartbeats to establish authority
+    NoOp = 1,
+}
+
+impl From<u8> for EntryType {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => EntryType::Normal,
+            1 => EntryType::NoOp,
+            _ => EntryType::Normal, // Default to Normal for unknown values
+        }
+    }
+}
+
+impl From<EntryType> for u8 {
+    fn from(entry_type: EntryType) -> Self {
+        entry_type as u8
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogEntry {
     pub(crate) term: u64,
     pub(crate) index: u64,
+    pub(crate) entry_type: EntryType,
     pub(crate) payload: Vec<u8>,
 }
 
@@ -12,12 +38,23 @@ impl LogEntry {
         LogEntry {
             term,
             index,
+            entry_type: EntryType::Normal,
+            payload,
+        }
+    }
+
+    pub(crate) fn new_with_type(term: u64, index: u64, entry_type: EntryType, payload: Vec<u8>) -> Self {
+        LogEntry {
+            term,
+            index,
+            entry_type,
             payload,
         }
     }
 
     pub fn calculate_total_size(&self) -> u64 {
-        self.payload.len() as u64 + 8 + 8 + 8
+        // term (8) + index (8) + entry_type (1) + payload_size (8) + payload
+        self.payload.len() as u64 + 8 + 8 + 1 + 8
     }
 }
 

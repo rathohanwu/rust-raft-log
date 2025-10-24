@@ -1,5 +1,5 @@
 use super::log_file_segment::LogFileSegment;
-use super::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError};
+use super::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType};
 use super::utils::create_memory_mapped_file;
 use std::collections::BTreeMap;
 use std::fs;
@@ -960,5 +960,50 @@ mod tests {
         assert!(raft_log.get_entry(0).is_none());        // Invalid index
         assert!(raft_log.get_entry(100).is_none());      // Non-existent
         assert!(raft_log.get_entries(5, 3).is_none());   // Invalid range
+    }
+
+    #[test]
+    fn test_entry_type_support_in_raft_log() {
+
+        let (config, _temp_dir) = create_test_config();
+        let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
+
+        // Test appending entries with different types
+        let normal_entry = LogEntry::new_with_type(1, 0, EntryType::Normal, "normal command".as_bytes().to_vec());
+        raft_log.append_entry(normal_entry).expect("Failed to append normal entry");
+
+        let noop_entry = LogEntry::new_with_type(1, 0, EntryType::NoOp, vec![]);
+        raft_log.append_entry(noop_entry).expect("Failed to append noop entry");
+
+        let another_normal = LogEntry::new_with_type(2, 0, EntryType::Normal, "another command".as_bytes().to_vec());
+        raft_log.append_entry(another_normal).expect("Failed to append another normal entry");
+
+        // Verify entries can be retrieved with correct types
+        let entry1 = raft_log.get_entry(1).expect("Should get entry 1");
+        assert_eq!(entry1.entry_type, EntryType::Normal);
+        assert_eq!(entry1.term, 1);
+        assert_eq!(entry1.payload, "normal command".as_bytes());
+
+        let entry2 = raft_log.get_entry(2).expect("Should get entry 2");
+        assert_eq!(entry2.entry_type, EntryType::NoOp);
+        assert_eq!(entry2.term, 1);
+        assert_eq!(entry2.payload, vec![]);
+
+        let entry3 = raft_log.get_entry(3).expect("Should get entry 3");
+        assert_eq!(entry3.entry_type, EntryType::Normal);
+        assert_eq!(entry3.term, 2);
+        assert_eq!(entry3.payload, "another command".as_bytes());
+
+        // Test range queries preserve entry types
+        let entries = raft_log.get_entries(1, 3).expect("Should get entries 1-3");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].entry_type, EntryType::Normal);
+        assert_eq!(entries[1].entry_type, EntryType::NoOp);
+        assert_eq!(entries[2].entry_type, EntryType::Normal);
+
+        // Test last entry
+        let last_entry = raft_log.get_last_log_entry().expect("Should get last entry");
+        assert_eq!(last_entry.entry_type, EntryType::Normal);
+        assert_eq!(last_entry.term, 2);
     }
 }
