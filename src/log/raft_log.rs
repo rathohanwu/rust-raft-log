@@ -1080,13 +1080,12 @@ mod tests {
         assert_eq!(raft_log.len(), 0);
 
         // 2. Receive vote request for term 1, vote for candidate 100
-        raft_state.start_new_term(1);
-        raft_state.vote_for_candidate(100).expect("Should vote successfully");
+        raft_state.start_new_term_as_follower(1);
+        assert!(raft_state.vote_for_candidate(100));
 
         // 3. Become candidate in term 2
-        raft_state.start_new_term(2);
-        raft_state.transition_to_state(ServerState::Candidate);
-        raft_state.vote_for_candidate(999).expect("Should vote for self");
+        raft_state.start_new_term_as_candidate(2);
+        assert!(raft_state.vote_for_candidate(999)); // Vote for self
 
         // 4. Become leader and start appending entries
         raft_state.transition_to_state(ServerState::Leader);

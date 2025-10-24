@@ -272,6 +272,21 @@ pub enum RaftLogError {
     CorruptedSegment(String),
 }
 
+impl std::fmt::Display for RaftLogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RaftLogError::DirectoryError(msg) => write!(f, "Directory error: {}", msg),
+            RaftLogError::SegmentFileError(msg) => write!(f, "Segment file error: {}", msg),
+            RaftLogError::InvalidIndex(index) => write!(f, "Invalid index: {}", index),
+            RaftLogError::TooManyEntriesRequested(count) => write!(f, "Too many entries requested: {}", count),
+            RaftLogError::EmptyLog => write!(f, "Empty log"),
+            RaftLogError::CorruptedSegment(msg) => write!(f, "Corrupted segment: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for RaftLogError {}
+
 /// Errors that can occur during RaftState operations
 #[derive(Debug, PartialEq)]
 pub enum RaftStateError {
@@ -282,6 +297,18 @@ pub enum RaftStateError {
     /// I/O error during state operations
     IoError(String),
 }
+
+impl std::fmt::Display for RaftStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RaftStateError::StateFileError(msg) => write!(f, "State file error: {}", msg),
+            RaftStateError::CorruptedState(msg) => write!(f, "Corrupted state: {}", msg),
+            RaftStateError::IoError(msg) => write!(f, "I/O error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for RaftStateError {}
 
 #[cfg(test)]
 mod tests {

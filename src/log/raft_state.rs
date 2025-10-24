@@ -162,15 +162,34 @@ impl RaftState {
         self.set_voted_for(None);
     }
 
+    /// Atomically updates term, clears voted_for, and transitions to candidate
+    pub fn start_new_term_as_candidate(&mut self, new_term: u64) {
+        self.set_current_term(new_term);
+        self.set_voted_for(None);
+        self.set_server_state(ServerState::Candidate);
+    }
+
+    /// Atomically updates term, clears voted_for, and transitions to follower
+    pub fn start_new_term_as_follower(&mut self, new_term: u64) {
+        self.set_current_term(new_term);
+        self.set_voted_for(None);
+        self.set_server_state(ServerState::Follower);
+    }
+
     /// Atomically votes for a candidate in the current term
-    pub fn vote_for_candidate(&mut self, candidate_id: NodeId) -> Result<(), RaftStateError> {
-        if self.get_voted_for().is_some() {
-            return Err(RaftStateError::CorruptedState(
-                "Already voted in current term".to_string(),
-            ));
+    /// Returns true if vote was granted, false if already voted for someone else
+    pub fn vote_for_candidate(&mut self, candidate_id: NodeId) -> bool {
+        match self.get_voted_for() {
+            None => {
+                // Haven't voted yet, grant vote
+                self.set_voted_for(Some(candidate_id));
+                true
+            }
+            Some(existing_vote) => {
+                // Already voted - only grant if voting for same candidate
+                existing_vote == candidate_id
+            }
         }
-        self.set_voted_for(Some(candidate_id));
-        Ok(())
     }
 
     /// Transitions to a new server state
@@ -325,15 +344,41 @@ mod tests {
     }
 
     #[test]
+    fn test_explicit_term_transitions() {
+        let (mut raft_state, _temp_dir) = create_test_state_file();
+
+        // Set initial state
+        raft_state.set_current_term(5);
+        raft_state.set_voted_for(Some(123));
+        raft_state.set_server_state(ServerState::Leader);
+
+        // Test start_new_term_as_candidate
+        raft_state.start_new_term_as_candidate(10);
+        assert_eq!(raft_state.get_current_term(), 10);
+        assert_eq!(raft_state.get_voted_for(), None);
+        assert_eq!(raft_state.get_server_state(), ServerState::Candidate);
+
+        // Test start_new_term_as_follower
+        raft_state.start_new_term_as_follower(15);
+        assert_eq!(raft_state.get_current_term(), 15);
+        assert_eq!(raft_state.get_voted_for(), None);
+        assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+    }
+
+    #[test]
     fn test_vote_for_candidate() {
         let (mut raft_state, _temp_dir) = create_test_state_file();
 
         // First vote should succeed
-        assert!(raft_state.vote_for_candidate(123).is_ok());
+        assert!(raft_state.vote_for_candidate(123));
         assert_eq!(raft_state.get_voted_for(), Some(123));
 
-        // Second vote in same term should fail
-        assert!(raft_state.vote_for_candidate(456).is_err());
+        // Voting for same candidate again should succeed
+        assert!(raft_state.vote_for_candidate(123));
+        assert_eq!(raft_state.get_voted_for(), Some(123));
+
+        // Voting for different candidate in same term should fail
+        assert!(!raft_state.vote_for_candidate(456));
         assert_eq!(raft_state.get_voted_for(), Some(123)); // Should remain unchanged
     }
 
@@ -492,13 +537,12 @@ mod tests {
         assert_eq!(raft_state.get_current_term(), 0);
 
         // Receive vote request for term 1, vote for candidate 100
-        raft_state.start_new_term(1);
-        assert!(raft_state.vote_for_candidate(100).is_ok());
+        raft_state.start_new_term_as_follower(1);
+        assert!(raft_state.vote_for_candidate(100));
 
         // Become candidate in term 2
-        raft_state.start_new_term(2);
-        raft_state.transition_to_state(ServerState::Candidate);
-        assert!(raft_state.vote_for_candidate(999).is_ok()); // Vote for self
+        raft_state.start_new_term_as_candidate(2);
+        assert!(raft_state.vote_for_candidate(999)); // Vote for self
 
         // Become leader
         raft_state.transition_to_state(ServerState::Leader);
