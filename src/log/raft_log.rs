@@ -1,5 +1,5 @@
 use super::log_file_segment::LogFileSegment;
-use super::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType, ServerState, NodeId};
+use super::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType, ServerState, NodeId, ClusterConfig, NodeInfo};
 use super::raft_state::{RaftState, RaftStateSnapshot};
 use super::utils::create_memory_mapped_file;
 use std::collections::BTreeMap;
@@ -384,6 +384,56 @@ mod tests {
 
     fn create_test_entry(term: u64, payload: &str) -> LogEntry {
         LogEntry::new(term, 0, payload.as_bytes().to_vec()) // index will be set by append_entry
+    }
+
+    /// Creates a test cluster config using a temporary directory that gets cleaned up automatically.
+    /// Use this for most tests where you don't need to inspect the files afterward.
+    /// Returns both the cluster config and the TempDir (keep the TempDir alive to prevent cleanup).
+    fn create_test_cluster_config() -> (ClusterConfig, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
+        let meta_path = temp_dir.path().join("raft_state.meta").to_string_lossy().to_string();
+
+        // Create a 3-node cluster for testing
+        let nodes = vec![
+            NodeInfo::new(1, "127.0.0.1".to_string(), 8001),
+            NodeInfo::new(2, "127.0.0.1".to_string(), 8002),
+            NodeInfo::new(3, "127.0.0.1".to_string(), 8003),
+        ];
+
+        let cluster_config = ClusterConfig::new(
+            1, // This is node 1
+            nodes,
+            log_dir,
+            meta_path,
+            1024, // 1KB segments for testing
+            1000, // max_entries_per_query
+        );
+        (cluster_config, temp_dir)
+    }
+
+    /// Creates a test cluster config that uses a local directory for file inspection.
+    /// Use this when you want to examine the generated segment files after the test.
+    /// Files will be created in a unique "./raft_logs_<test_name>" directory.
+    fn create_inspectable_cluster_config(test_name: &str) -> ClusterConfig {
+        let log_dir = format!("./raft_logs_{}", test_name);
+        let meta_path = format!("./raft_logs_{}/raft_state.meta", test_name);
+
+        // Create a 3-node cluster for testing
+        let nodes = vec![
+            NodeInfo::new(1, "127.0.0.1".to_string(), 8001),
+            NodeInfo::new(2, "127.0.0.1".to_string(), 8002),
+            NodeInfo::new(3, "127.0.0.1".to_string(), 8003),
+        ];
+
+        ClusterConfig::new(
+            1, // This is node 1
+            nodes,
+            log_dir,
+            meta_path,
+            1024, // 1KB segments for testing
+            1000, // max_entries_per_query
+        )
     }
 
     /// Creates a test config that uses a local directory for file inspection.
@@ -1098,5 +1148,131 @@ mod tests {
         println!("   - Server state: {:?}", reloaded_snapshot.server_state);
         println!("   - Log entries: {}", raft_log.len());
         println!("   - Commit index: {}", reloaded_snapshot.commit_index);
+    }
+
+    #[test]
+    fn test_cluster_config_integration() {
+        use tempfile::TempDir;
+
+        // Create cluster config for node 1 in a 3-node cluster
+        let (cluster_config, _temp_dir) = create_test_cluster_config();
+
+        // Verify cluster config properties
+        assert_eq!(cluster_config.node_id, 1);
+        assert_eq!(cluster_config.cluster_size(), 3);
+        assert_eq!(cluster_config.majority_size(), 2);
+        assert_eq!(cluster_config.get_address(), "127.0.0.1:8001");
+        assert_eq!(cluster_config.log_segment_size, 1024);
+        assert_eq!(cluster_config.max_entries_per_query, 1000);
+
+        // Verify this node's information
+        let this_node = cluster_config.get_this_node().expect("Should find this node");
+        assert_eq!(this_node.node_id, 1);
+        assert_eq!(this_node.get_address(), "127.0.0.1:8001");
+
+        // Verify other nodes in cluster
+        let other_nodes = cluster_config.get_other_nodes();
+        assert_eq!(other_nodes.len(), 2);
+        assert_eq!(other_nodes[0].node_id, 2);
+        assert_eq!(other_nodes[0].get_address(), "127.0.0.1:8002");
+        assert_eq!(other_nodes[1].node_id, 3);
+        assert_eq!(other_nodes[1].get_address(), "127.0.0.1:8003");
+
+        // Verify we can find specific nodes
+        let node2 = cluster_config.get_node(2).expect("Should find node 2");
+        assert_eq!(node2.get_address(), "127.0.0.1:8002");
+
+        // Create RaftLog using cluster config
+        let raft_log_config = cluster_config.to_raft_log_config();
+        let mut raft_log = RaftLog::new(raft_log_config).expect("Failed to create RaftLog");
+
+        // Create RaftState using cluster config
+        let mut raft_state = RaftState::new(&cluster_config.meta_file_path).expect("Failed to create RaftState");
+
+        // Test basic operations
+        let entry = LogEntry::new_with_type(1, 0, EntryType::Normal, "test command".as_bytes().to_vec());
+        raft_log.append_entry(entry).expect("Failed to append entry");
+
+        raft_state.set_current_term(1);
+        raft_state.set_server_state(ServerState::Leader);
+
+        // Verify everything works together
+        assert_eq!(raft_log.len(), 1);
+        assert_eq!(raft_state.get_current_term(), 1);
+        assert_eq!(raft_state.get_server_state(), ServerState::Leader);
+
+        println!("✅ ClusterConfig integration test completed successfully!");
+        println!("   - Node ID: {}", cluster_config.node_id);
+        println!("   - This node address: {}", cluster_config.get_address());
+        println!("   - Cluster size: {}", cluster_config.cluster_size());
+        println!("   - Majority size: {}", cluster_config.majority_size());
+        println!("   - Other nodes: {:?}", other_nodes.iter().map(|n| n.get_address()).collect::<Vec<_>>());
+        println!("   - Log directory: {}", cluster_config.log_directory);
+        println!("   - Meta file: {}", cluster_config.meta_file_path);
+    }
+
+    #[test]
+    fn test_multiple_node_cluster_configs() {
+        // Test creating configs for multiple nodes in the same cluster
+        let node1_config = ClusterConfig::test_cluster_config(1);
+        let node2_config = ClusterConfig::test_cluster_config(2);
+        let node3_config = ClusterConfig::test_cluster_config(3);
+
+        // All nodes should have the same cluster configuration
+        assert_eq!(node1_config.cluster_size(), 3);
+        assert_eq!(node2_config.cluster_size(), 3);
+        assert_eq!(node3_config.cluster_size(), 3);
+
+        // But different node IDs
+        assert_eq!(node1_config.node_id, 1);
+        assert_eq!(node2_config.node_id, 2);
+        assert_eq!(node3_config.node_id, 3);
+
+        // Each node should know about all other nodes
+        let node1_others = node1_config.get_other_nodes();
+        assert_eq!(node1_others.len(), 2);
+        assert!(node1_others.iter().any(|n| n.node_id == 2));
+        assert!(node1_others.iter().any(|n| n.node_id == 3));
+
+        let node2_others = node2_config.get_other_nodes();
+        assert_eq!(node2_others.len(), 2);
+        assert!(node2_others.iter().any(|n| n.node_id == 1));
+        assert!(node2_others.iter().any(|n| n.node_id == 3));
+
+        // Verify each node can find itself
+        assert_eq!(node1_config.get_address(), "127.0.0.1:8001");
+        assert_eq!(node2_config.get_address(), "127.0.0.1:8002");
+        assert_eq!(node3_config.get_address(), "127.0.0.1:8003");
+
+        // Verify unique log directories
+        assert_eq!(node1_config.log_directory, "./test_logs_node_1");
+        assert_eq!(node2_config.log_directory, "./test_logs_node_2");
+        assert_eq!(node3_config.log_directory, "./test_logs_node_3");
+
+        // Verify majority calculation
+        assert_eq!(node1_config.majority_size(), 2); // (3/2) + 1 = 2
+        assert_eq!(node2_config.majority_size(), 2);
+        assert_eq!(node3_config.majority_size(), 2);
+
+        // Test single-node configs (for simple tests)
+        let single_node_config = ClusterConfig::test_config(1);
+        assert_eq!(single_node_config.cluster_size(), 1);
+        assert_eq!(single_node_config.majority_size(), 1);
+        assert_eq!(single_node_config.get_other_nodes().len(), 0);
+
+        println!("✅ Multi-node cluster config test completed successfully!");
+        println!("   - Node 1: {} (others: {})",
+                 node1_config.get_address(),
+                 node1_others.len());
+        println!("   - Node 2: {} (others: {})",
+                 node2_config.get_address(),
+                 node2_others.len());
+        let node3_others = node3_config.get_other_nodes();
+        println!("   - Node 3: {} (others: {})",
+                 node3_config.get_address(),
+                 node3_others.len());
+        println!("   - Cluster size: {}, Majority: {}",
+                 node1_config.cluster_size(),
+                 node1_config.majority_size());
     }
 }
