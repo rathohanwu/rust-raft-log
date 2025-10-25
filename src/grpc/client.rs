@@ -13,6 +13,7 @@ use super::proto::{self, raft_service_client::RaftServiceClient};
 use super::conversion::*;
 
 /// gRPC client with persistent connection management for Raft RPCs
+#[derive(Clone)]
 pub struct RaftGrpcClient {
     /// Persistent connections to other nodes in the cluster
     connections: Arc<RwLock<HashMap<NodeId, RaftServiceClient<Channel>>>>,
@@ -182,12 +183,4 @@ impl RaftGrpcClient {
     }
 }
 
-// Implement Clone for RaftGrpcClient to enable sharing across async tasks
-impl Clone for RaftGrpcClient {
-    fn clone(&self) -> Self {
-        Self {
-            connections: Arc::clone(&self.connections),
-            config: self.config.clone(),
-        }
-    }
-}
+

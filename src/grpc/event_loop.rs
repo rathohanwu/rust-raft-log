@@ -4,8 +4,8 @@ use std::time::Duration;
 use tokio::time::{interval, sleep, Instant};
 
 use super::client::RaftGrpcClient;
-use crate::log::{models::ServerState, RaftNode};
-
+use crate::log::{models::ServerState, RaftNode, RequestVoteRequest};
+use crate::ServerState::*;
 
 /// Configuration for Raft timing parameters
 #[derive(Debug, Clone)]
@@ -28,6 +28,7 @@ impl Default for RaftTimingConfig {
 }
 
 /// Raft event loop that handles timeouts, elections, and heartbeats
+#[derive(Clone)]
 pub struct RaftEventLoop {
     raft_node: Arc<Mutex<RaftNode>>,
     grpc_client: RaftGrpcClient,
@@ -55,9 +56,9 @@ impl RaftEventLoop {
     pub async fn run(&self) {
         println!("🔄 Starting Raft event loop...");
 
-        let mut election_timeout = self.generate_election_timeout();
-        let mut heartbeat_interval = interval(Duration::from_millis(self.timing_config.heartbeat_interval));
-        let mut candidate_started_election = false;
+        let election_timeout = self.generate_election_timeout();
+        let mut heartbeat_interval =
+            interval(Duration::from_millis(self.timing_config.heartbeat_interval));
 
         loop {
             // Check for shutdown signal
@@ -66,44 +67,25 @@ impl RaftEventLoop {
                 break;
             }
 
-            let current_state = {
+            let mut current_state = {
                 let node = self.raft_node.lock().unwrap();
                 node.get_server_state()
             };
 
+            if self.is_election_timeout_expired(&election_timeout) && current_state != Leader {
+                current_state = Candidate;
+            }
+
             match current_state {
-                ServerState::Follower => {
-                    // Reset candidate flag when becoming follower
-                    candidate_started_election = false;
-
-                    // Only job: check election timeout
-                    if self.is_election_timeout_expired(&election_timeout) {
-                        println!("⏰ Election timeout! Transitioning to candidate...");
-                        // The create_vote_request() method will handle the state transition
-                        election_timeout = self.generate_election_timeout();
-                    }
+                Follower => {}
+                Candidate => {
+                    let vote_request = {
+                        let mut node = self.raft_node.lock().unwrap();
+                        node.create_vote_request()
+                    };
+                    self.send_vote_requests(vote_request.unwrap()).await;
                 }
-                ServerState::Candidate => {
-                    // Only start election once when entering candidate state
-                    if !candidate_started_election {
-                        println!("📢 Starting election as candidate...");
-                        self.send_vote_requests().await;
-                        candidate_started_election = true;
-                        election_timeout = self.generate_election_timeout();
-                    }
-
-                    // Check for election timeout (split vote scenario)
-                    if self.is_election_timeout_expired(&election_timeout) {
-                        println!("🔄 Election timeout as candidate - restarting election...");
-                        candidate_started_election = false; // Will restart election next loop
-                        election_timeout = self.generate_election_timeout();
-                    }
-                }
-                ServerState::Leader => {
-                    // Reset candidate flag when becoming leader
-                    candidate_started_election = false;
-
-                    // Send periodic heartbeats
+                Leader => {
                     heartbeat_interval.tick().await;
                     self.send_heartbeats().await;
                 }
@@ -120,69 +102,66 @@ impl RaftEventLoop {
         last_heartbeat.elapsed() >= *election_timeout
     }
 
-    /// Send vote requests using RaftNode's optimized create_vote_request() method
-    async fn send_vote_requests(&self) {
-        // Use RaftNode's optimized create_vote_request() method to get a single vote request
-        let vote_request = {
-            let mut node = self.raft_node.lock().unwrap();
-            node.create_vote_request() // Returns Option<RequestVoteRequest>
-        };
-
-        let vote_request = match vote_request {
-            Some(request) => request,
-            None => {
-                println!("⚠️ Failed to create vote request (election cannot be started)");
-                return;
-            }
-        };
-
+    /// Send vote requests using a provided vote request
+    async fn send_vote_requests(&self, vote_request: RequestVoteRequest) {
         let node_id = {
             let node = self.raft_node.lock().unwrap();
             node.get_node_id()
         };
 
-        println!("📢 Node {} starting election with single optimized vote request...", node_id);
+        println!(
+            "📢 Node {} starting election with provided vote request...",
+            node_id
+        );
 
         // Get target nodes (all other nodes in cluster)
         let other_nodes = {
             let node = self.raft_node.lock().unwrap();
-            node.get_config().get_other_nodes().iter().map(|n| n.node_id).collect::<Vec<_>>()
+            node.get_config()
+                .get_other_nodes()
+                .iter()
+                .map(|n| n.node_id)
+                .collect::<Vec<_>>()
         };
 
-        println!("📤 Broadcasting vote request to {} nodes...", other_nodes.len());
+        println!(
+            "📤 Broadcasting vote request to {} nodes...",
+            other_nodes.len()
+        );
 
-        // Send the single vote request to all other nodes
+        // Send the vote request to all other nodes
         for target_node_id in other_nodes {
-            match self.grpc_client.request_vote(target_node_id, vote_request.clone()).await {
-                Ok(response) => {
-                    println!("📥 Vote response from Node {}: granted={}, term={}",
-                             target_node_id, response.vote_granted, response.term);
+            let request_clone = vote_request.clone();
+            let response = self
+                .grpc_client
+                .request_vote(target_node_id, request_clone)
+                .await;
 
-                    // Use RaftNode's tested handle_vote_response() method
+            match response {
+                Ok(vote_response) => {
+                    println!(
+                        "📥 Vote response from Node {}: granted={}, term={}",
+                        target_node_id, vote_response.vote_granted, vote_response.term
+                    );
+
+                    // Handle the vote response
                     let won_election = {
                         let mut node = self.raft_node.lock().unwrap();
-                        node.handle_vote_response(target_node_id, response)
+                        node.handle_vote_response(target_node_id, vote_response)
                     };
 
                     if won_election {
                         println!("👑 Won election! Becoming leader...");
                         let mut node = self.raft_node.lock().unwrap();
                         node.become_leader();
-                        return;
+                        break; // Stop sending more requests
                     }
                 }
                 Err(e) => {
-                    println!("❌ Vote request to Node {} failed: {}", target_node_id, e);
+                    println!("❌ Failed to get vote from Node {}: {}", target_node_id, e);
                 }
             }
         }
-
-        // Log final election status
-        let (vote_count, cluster_size) = {
-            let node = self.raft_node.lock().unwrap();
-            (node.get_vote_count(), node.get_config().cluster_size())
-        };
-        println!("🗳️ Election result: {}/{} votes", vote_count, cluster_size);
     }
 
     /// Send heartbeats using RaftNode's tested create_heartbeats() method
@@ -200,10 +179,14 @@ impl RaftEventLoop {
         println!("💓 Sending {} heartbeats...", heartbeat_requests.len());
 
         // Store original requests for response handling
-        let original_requests: std::collections::HashMap<_, _> = heartbeat_requests.iter().cloned().collect();
+        let original_requests: std::collections::HashMap<_, _> =
+            heartbeat_requests.iter().cloned().collect();
 
         // Send heartbeats via gRPC
-        let results = self.grpc_client.send_append_entries(heartbeat_requests).await;
+        let results = self
+            .grpc_client
+            .send_append_entries(heartbeat_requests)
+            .await;
 
         // Process responses using RaftNode's tested handle_append_entries_response() method
         for (node_id, result) in results {
@@ -212,10 +195,17 @@ impl RaftEventLoop {
                     if let Some(original_request) = original_requests.get(&node_id) {
                         let response_success = response.success;
                         let mut node = self.raft_node.lock().unwrap();
-                        let still_leader = node.handle_append_entries_response(node_id, original_request, response);
+                        let still_leader = node.handle_append_entries_response(
+                            node_id,
+                            original_request,
+                            response,
+                        );
 
                         if !still_leader {
-                            println!("📉 Stepped down from leader due to higher term from Node {}", node_id);
+                            println!(
+                                "📉 Stepped down from leader due to higher term from Node {}",
+                                node_id
+                            );
                             return;
                         }
 
@@ -258,17 +248,5 @@ impl RaftEventLoop {
     /// Get a reference to the gRPC client (only the event loop should send requests)
     pub fn get_grpc_client(&self) -> &RaftGrpcClient {
         &self.grpc_client
-    }
-}
-
-impl Clone for RaftEventLoop {
-    fn clone(&self) -> Self {
-        Self {
-            raft_node: Arc::clone(&self.raft_node),
-            grpc_client: self.grpc_client.clone(),
-            timing_config: self.timing_config.clone(),
-            shutdown_signal: Arc::clone(&self.shutdown_signal),
-            last_heartbeat: Arc::clone(&self.last_heartbeat),
-        }
     }
 }
