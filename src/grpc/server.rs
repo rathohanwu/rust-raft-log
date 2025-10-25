@@ -1,10 +1,9 @@
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status, transport::Server};
-use tokio::net::TcpListener;
 
 use crate::log::{RaftNode, models::ClusterConfig};
 use super::proto::{self, raft_service_server::{RaftService, RaftServiceServer}};
-use super::conversion::*;
+use super::client::RaftGrpcClient;
 
 /// gRPC service implementation that wraps RaftNode
 pub struct RaftGrpcService {
@@ -68,17 +67,20 @@ impl RaftService for RaftGrpcService {
     }
 }
 
-/// gRPC server that hosts the Raft service
+/// gRPC server that hosts the Raft service and includes client for outbound communication
 pub struct RaftGrpcServer {
     raft_node: Arc<Mutex<RaftNode>>,
+    grpc_client: RaftGrpcClient,
     config: ClusterConfig,
 }
 
 impl RaftGrpcServer {
     pub fn new(raft_node: RaftNode) -> Self {
         let config = raft_node.get_config().clone();
+        let grpc_client = RaftGrpcClient::new(config.clone());
         Self {
             raft_node: Arc::new(Mutex::new(raft_node)),
+            grpc_client,
             config,
         }
     }
@@ -107,12 +109,18 @@ impl RaftGrpcServer {
     pub fn get_raft_node(&self) -> Arc<Mutex<RaftNode>> {
         Arc::clone(&self.raft_node)
     }
+
+    /// Get a reference to the gRPC client for outbound communication
+    pub fn get_grpc_client(&self) -> &RaftGrpcClient {
+        &self.grpc_client
+    }
 }
 
 impl Clone for RaftGrpcServer {
     fn clone(&self) -> Self {
         Self {
             raft_node: Arc::clone(&self.raft_node),
+            grpc_client: self.grpc_client.clone(),
             config: self.config.clone(),
         }
     }
