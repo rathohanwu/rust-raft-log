@@ -93,18 +93,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🗳️  Simulating Leader Election Process");
 
     // Node 1 starts an election
-    let vote_requests = {
+    let vote_request = {
         let mut node1 = server1_raft.lock().unwrap();
         println!("📢 Node 1 starting election...");
-        node1.start_election()
+        node1.create_vote_request()
     };
 
-    println!("✅ Node 1 created {} vote requests", vote_requests.len());
+    let request = match vote_request {
+        Some(request) => {
+            println!("✅ Node 1 created vote request: term={}, candidate_id={}",
+                     request.term, request.candidate_id);
+            request
+        }
+        None => {
+            println!("❌ Node 1 failed to create vote request");
+            return Ok(());
+        }
+    };
 
     // Use the built-in client to broadcast vote requests
-    if let Some(vote_request) = vote_requests.first() {
-        println!("📤 Broadcasting vote requests using built-in gRPC client...");
-        let results = server1_client.broadcast_request_vote(vote_request.clone()).await;
+    println!("📤 Broadcasting vote request using built-in gRPC client...");
+    let results = server1_client.broadcast_request_vote(request).await;
         
         let mut votes_received = 1; // Node 1 votes for itself
         for (node_id, result) in results {
@@ -129,7 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             node1.become_leader();
             println!("👑 Node 1 became LEADER!");
         }
-    }
 
     // Check final states
     println!("\n📊 Final Node States:");

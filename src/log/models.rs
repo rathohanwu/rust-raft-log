@@ -248,7 +248,7 @@ impl ClusterConfig {
 }
 
 /// Server state in Raft consensus
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ServerState {
     Follower = 0,
     Candidate = 1,

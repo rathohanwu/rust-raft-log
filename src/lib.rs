@@ -9,4 +9,4 @@ pub use log::{
     raft_state::{RaftState, RaftStateSnapshot},
 };
 
-pub use grpc::{RaftGrpcServer, RaftGrpcClient};
+pub use grpc::{RaftGrpcServer, RaftGrpcClient, RaftEventLoop, RaftTimingConfig};

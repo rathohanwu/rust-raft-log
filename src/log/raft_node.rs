@@ -193,8 +193,9 @@ impl RaftNode {
         }
     }
 
-    /// Starts an election (transitions to candidate and requests votes)
-    pub fn start_election(&mut self) -> Vec<RequestVoteRequest> {
+    /// Transitions to candidate state and creates a vote request for the election
+    /// Returns None if the election cannot be started (e.g., voting for self fails)
+    pub fn create_vote_request(&mut self) -> Option<RequestVoteRequest> {
         // Increment term, clear vote, and become candidate
         let new_term = self.state.get_current_term() + 1;
         self.state.start_new_term_as_candidate(new_term);
@@ -206,26 +207,23 @@ impl RaftNode {
         // Vote for ourselves
         if !self.state.vote_for_candidate(self.config.node_id) {
             // This shouldn't happen since we just cleared the vote
-            return vec![];
+            return None;
         }
         self.votes_received.insert(self.config.node_id);
 
-        // Create RequestVote requests for all other nodes
+        // Create a single RequestVote request (identical for all other nodes)
         let (last_log_index, last_log_term) = self.get_last_log_info();
-        let mut requests = Vec::new();
+        let request = RequestVoteRequest::new(
+            new_term,
+            self.config.node_id,
+            last_log_index,
+            last_log_term,
+        );
 
-        for _other_node in self.config.get_other_nodes() {
-            let request = RequestVoteRequest::new(
-                new_term,
-                self.config.node_id,
-                last_log_index,
-                last_log_term,
-            );
-            requests.push(request);
-        }
-
-        requests
+        Some(request)
     }
+
+
 
     /// Handles a RequestVote response and returns true if election is won
     pub fn handle_vote_response(&mut self, from_node: NodeId, response: RequestVoteResponse) -> bool {
@@ -559,31 +557,33 @@ mod tests {
     }
 
     #[test]
-    fn test_start_election() {
+    fn test_create_vote_request() {
         let (mut node, _temp_dir) = create_test_node(1);
 
-        let requests = node.start_election();
+        let request = node.create_vote_request();
 
-        // Should create requests for other 2 nodes
-        assert_eq!(requests.len(), 2);
+        // Should create a single vote request
+        assert!(request.is_some());
+        let request = request.unwrap();
+
+        // Check node state after creating vote request
         assert_eq!(node.get_current_term(), 1);
         assert_eq!(node.get_server_state(), ServerState::Candidate);
 
         // Check request content
-        for request in requests {
-            assert_eq!(request.term, 1);
-            assert_eq!(request.candidate_id, 1);
-            assert_eq!(request.last_log_index, 0);
-            assert_eq!(request.last_log_term, 0);
-        }
+        assert_eq!(request.term, 1);
+        assert_eq!(request.candidate_id, 1);
+        assert_eq!(request.last_log_index, 0);
+        assert_eq!(request.last_log_term, 0);
     }
 
     #[test]
     fn test_become_leader() {
         let (mut node, _temp_dir) = create_test_node(1);
 
-        // Start election first
-        node.start_election();
+        // Create vote request first (transitions to candidate)
+        let vote_request = node.create_vote_request();
+        assert!(vote_request.is_some());
 
         // Become leader
         node.become_leader();
@@ -645,14 +645,15 @@ mod tests {
         assert_eq!(node3.get_server_state(), ServerState::Follower);
 
         // Node 1 starts an election
-        let vote_requests = node1.start_election();
-        assert_eq!(vote_requests.len(), 2);
+        let vote_request = node1.create_vote_request();
+        assert!(vote_request.is_some());
+        let vote_request = vote_request.unwrap();
         assert_eq!(node1.get_server_state(), ServerState::Candidate);
         assert_eq!(node1.get_current_term(), 1);
 
         // Node 2 and Node 3 receive vote requests and grant votes
-        let vote_response_2 = node2.handle_request_vote(vote_requests[0].clone());
-        let vote_response_3 = node3.handle_request_vote(vote_requests[1].clone());
+        let vote_response_2 = node2.handle_request_vote(vote_request.clone());
+        let vote_response_3 = node3.handle_request_vote(vote_request.clone());
 
         assert!(vote_response_2.vote_granted);
         assert!(vote_response_3.vote_granted);
@@ -725,12 +726,14 @@ mod tests {
         let (mut node3, _temp3) = create_test_node(3);
 
         // Node 1 starts election
-        let vote_requests = node1.start_election();
+        let vote_request = node1.create_vote_request();
+        assert!(vote_request.is_some());
+        let vote_request = vote_request.unwrap();
         assert_eq!(node1.get_vote_count(), 1); // Voted for self
         assert!(node1.is_in_election());
 
         // Node 2 grants vote
-        let vote_response_2 = node2.handle_request_vote(vote_requests[0].clone());
+        let vote_response_2 = node2.handle_request_vote(vote_request.clone());
         assert!(vote_response_2.vote_granted);
 
         // Node 1 receives vote from node 2
@@ -740,7 +743,7 @@ mod tests {
         assert!(!node1.is_in_election());
 
         // Test vote from node 3 after election won (should be ignored)
-        let vote_response_3 = node3.handle_request_vote(vote_requests[1].clone());
+        let vote_response_3 = node3.handle_request_vote(vote_request.clone());
         let late_vote = node1.handle_vote_response(3, vote_response_3);
         assert!(!late_vote); // Election already won
     }
@@ -752,7 +755,8 @@ mod tests {
         let (mut follower2, _temp3) = create_test_node(3);
 
         // Make node 1 leader
-        leader.start_election();
+        let vote_request = leader.create_vote_request();
+        assert!(vote_request.is_some());
         leader.become_leader();
 
         // Leader appends some entries
@@ -805,7 +809,8 @@ mod tests {
         let (mut follower, _temp2) = create_test_node(2);
 
         // Make node 1 leader
-        leader.start_election();
+        let vote_request = leader.create_vote_request();
+        assert!(vote_request.is_some());
         leader.become_leader();
 
         // Leader has entries 1 (NoOp), 2, 3
@@ -856,7 +861,8 @@ mod tests {
         let (mut leader, _temp1) = create_test_node(1);
 
         // Make node 1 leader
-        leader.start_election();
+        let vote_request = leader.create_vote_request();
+        assert!(vote_request.is_some());
         leader.become_leader();
 
         // When we become leader, a NoOp entry is automatically appended
