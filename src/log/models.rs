@@ -43,7 +43,7 @@ impl LogEntry {
         }
     }
 
-    pub(crate) fn new_with_type(term: u64, index: u64, entry_type: EntryType, payload: Vec<u8>) -> Self {
+    pub fn new_with_type(term: u64, index: u64, entry_type: EntryType, payload: Vec<u8>) -> Self {
         LogEntry {
             term,
             index,
@@ -55,6 +55,23 @@ impl LogEntry {
     pub fn calculate_total_size(&self) -> u64 {
         // term (8) + index (8) + entry_type (1) + payload_size (8) + payload
         self.payload.len() as u64 + 8 + 8 + 1 + 8
+    }
+
+    // Public getters for gRPC serialization
+    pub fn term(&self) -> u64 {
+        self.term
+    }
+
+    pub fn index(&self) -> u64 {
+        self.index
+    }
+
+    pub fn entry_type(&self) -> &EntryType {
+        &self.entry_type
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
     }
 }
 

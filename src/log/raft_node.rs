@@ -53,6 +53,11 @@ impl RaftNode {
         self.state.get_current_term()
     }
 
+    /// Gets the cluster configuration
+    pub fn get_config(&self) -> &ClusterConfig {
+        &self.config
+    }
+
     /// Gets the current server state
     pub fn get_server_state(&self) -> ServerState {
         self.state.get_server_state()

@@ -1,4 +1,5 @@
 pub mod log;
+pub mod grpc;
 
 pub use log::{
     models::{LogEntry, RaftLogConfig, RaftLogError, EntryType, NodeId, ServerState, RaftStateError, ClusterConfig, NodeInfo},
@@ -7,3 +8,5 @@ pub use log::{
     raft_rpc::{RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse},
     raft_state::{RaftState, RaftStateSnapshot},
 };
+
+pub use grpc::{RaftGrpcServer, RaftGrpcClient};
