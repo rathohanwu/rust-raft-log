@@ -15,6 +15,7 @@ Thumbs.db
 # Logs
 *.log
 *.dat
+*.meta
 
 # Raft data
 raft-data/

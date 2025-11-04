@@ -1,30 +1,26 @@
 use std::sync::{Arc, Mutex};
-use tonic::{Request, Response, Status, transport::Server};
 use tokio::task::JoinHandle;
+use tonic::{transport::Server, Request, Response, Status};
 
-use crate::log::{RaftNode, models::ClusterConfig};
-use super::proto::{self, raft_service_server::{RaftService, RaftServiceServer}};
 use super::client::RaftGrpcClient;
-use super::event_loop::{RaftEventLoop, RaftTimingConfig};
+use super::event_loop::RaftEventLoop;
+use super::proto::{
+    self,
+    raft_service_server::{RaftService, RaftServiceServer},
+};
+use crate::log::{models::ClusterConfig, RaftNode};
 
 /// gRPC service implementation that wraps RaftNode
 pub struct RaftGrpcService {
     raft_node: Arc<Mutex<RaftNode>>,
-    event_loop: Option<RaftEventLoop>,
+    event_loop: RaftEventLoop,
 }
 
 impl RaftGrpcService {
-    pub fn new(raft_node: Arc<Mutex<RaftNode>>) -> Self {
+    pub fn new(raft_node: Arc<Mutex<RaftNode>>, event_loop: RaftEventLoop) -> Self {
         Self {
             raft_node,
-            event_loop: None,
-        }
-    }
-
-    pub fn new_with_event_loop(raft_node: Arc<Mutex<RaftNode>>, event_loop: RaftEventLoop) -> Self {
-        Self {
-            raft_node,
-            event_loop: Some(event_loop),
+            event_loop,
         }
     }
 }
@@ -37,20 +33,20 @@ impl RaftService for RaftGrpcService {
     ) -> Result<Response<proto::RequestVoteResponse>, Status> {
         let req = request.into_inner();
         let rust_request: crate::log::raft_rpc::RequestVoteRequest = req.into();
-        
+
         // Use spawn_blocking to handle the synchronous RaftNode method
         let raft_node = Arc::clone(&self.raft_node);
         let response = tokio::task::spawn_blocking(move || {
-            let mut node = raft_node.lock().map_err(|_| {
-                Status::internal("Failed to acquire lock on RaftNode")
-            })?;
-            
+            let mut node = raft_node
+                .lock()
+                .map_err(|_| Status::internal("Failed to acquire lock on RaftNode"))?;
+
             let rust_response = node.handle_request_vote(rust_request);
             Ok::<_, Status>(rust_response)
         })
         .await
         .map_err(|_| Status::internal("Task join error"))??;
-        
+
         let proto_response: proto::RequestVoteResponse = response.into();
         Ok(Response::new(proto_response))
     }
@@ -67,17 +63,15 @@ impl RaftService for RaftGrpcService {
         let event_loop = self.event_loop.clone();
 
         let response = tokio::task::spawn_blocking(move || {
-            let mut node = raft_node.lock().map_err(|_| {
-                Status::internal("Failed to acquire lock on RaftNode")
-            })?;
+            let mut node = raft_node
+                .lock()
+                .map_err(|_| Status::internal("Failed to acquire lock on RaftNode"))?;
 
             let rust_response = node.handle_append_entries(rust_request);
 
             // If this was a successful AppendEntries from leader, reset election timeout
             if rust_response.success {
-                if let Some(event_loop) = event_loop {
-                    event_loop.reset_election_timeout();
-                }
+                event_loop.reset_election_timeout();
             }
 
             Ok::<_, Status>(rust_response)
@@ -99,20 +93,12 @@ pub struct RaftGrpcServer {
 
 impl RaftGrpcServer {
     pub fn new(raft_node: RaftNode) -> Self {
-        Self::new_with_timing(raft_node, None)
-    }
-
-    pub fn new_with_timing(raft_node: RaftNode, timing_config: Option<RaftTimingConfig>) -> Self {
         let config = raft_node.get_config().clone();
         let raft_node_arc = Arc::new(Mutex::new(raft_node));
 
         // Event loop creates and owns the gRPC client
         let grpc_client = RaftGrpcClient::new(config.clone());
-        let event_loop = RaftEventLoop::new(
-            Arc::clone(&raft_node_arc),
-            grpc_client,
-            timing_config,
-        );
+        let event_loop = RaftEventLoop::new(Arc::clone(&raft_node_arc), grpc_client, &config);
 
         Self {
             raft_node: raft_node_arc,
@@ -123,24 +109,23 @@ impl RaftGrpcServer {
 
     /// Start the gRPC server and event loop
     pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let this_node = self.config.get_this_node()
+        let this_node = self
+            .config
+            .get_this_node()
             .ok_or("Current node not found in cluster configuration")?;
 
         let addr = format!("0.0.0.0:{}", this_node.port).parse()?;
 
-        let service = RaftGrpcService::new_with_event_loop(
+        let service = RaftGrpcService::new(
             Arc::clone(&self.raft_node),
-            self.event_loop.clone()
+            self.event_loop.clone(),
         );
         let svc = RaftServiceServer::new(service);
 
         println!("Starting Raft gRPC server on {}", addr);
 
         // Start gRPC server
-        let server_result = Server::builder()
-            .add_service(svc)
-            .serve(addr)
-            .await;
+        let server_result = Server::builder().add_service(svc).serve(addr).await;
 
         // Start event loop in background
         let event_loop_handle = {
@@ -159,15 +144,25 @@ impl RaftGrpcServer {
     }
 
     /// Start the gRPC server and event loop, returning handles for manual control
-    pub async fn start_with_handles(&self) -> Result<(JoinHandle<()>, JoinHandle<Result<(), tonic::transport::Error>>), Box<dyn std::error::Error>> {
-        let this_node = self.config.get_this_node()
+    pub async fn start_with_handles(
+        &self,
+    ) -> Result<
+        (
+            JoinHandle<()>,
+            JoinHandle<Result<(), tonic::transport::Error>>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let this_node = self
+            .config
+            .get_this_node()
             .ok_or("Current node not found in cluster configuration")?;
 
         let addr = format!("0.0.0.0:{}", this_node.port).parse()?;
 
-        let service = RaftGrpcService::new_with_event_loop(
+        let service = RaftGrpcService::new(
             Arc::clone(&self.raft_node),
-            self.event_loop.clone()
+            self.event_loop.clone(),
         );
         let svc = RaftServiceServer::new(service);
 
@@ -182,12 +177,8 @@ impl RaftGrpcServer {
         };
 
         // Start gRPC server
-        let server_handle = tokio::spawn(async move {
-            Server::builder()
-                .add_service(svc)
-                .serve(addr)
-                .await
-        });
+        let server_handle =
+            tokio::spawn(async move { Server::builder().add_service(svc).serve(addr).await });
 
         Ok((event_loop_handle, server_handle))
     }

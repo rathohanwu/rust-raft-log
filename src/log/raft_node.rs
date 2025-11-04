@@ -1,7 +1,9 @@
-use super::models::{NodeId, ServerState, ClusterConfig, EntryType, NodeInfo, LogEntry};
+use super::models::{ClusterConfig, EntryType, LogEntry, NodeId, NodeInfo, ServerState};
 use super::raft_log::RaftLog;
+use super::raft_rpc::{
+    AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse,
+};
 use super::raft_state::{RaftState, RaftStateSnapshot};
-use super::raft_rpc::{RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse};
 use std::collections::{HashMap, HashSet};
 
 /// Core Raft node that implements the Raft consensus algorithm
@@ -78,8 +80,13 @@ impl RaftNode {
                     (0, 0)
                 }
             }
-            None => (0, 0)
+            None => (0, 0),
         }
+    }
+
+    /// Gets a log entry at the specified index
+    pub fn get_entry(&self, index: u64) -> Option<LogEntry> {
+        self.log.get_entry(index)
     }
 
     /// Handles RequestVote RPC
@@ -101,9 +108,8 @@ impl RaftNode {
 
         // Check if candidate's log is at least as up-to-date as ours
         let (last_log_index, last_log_term) = self.get_last_log_info();
-        let candidate_log_up_to_date =
-            request.last_log_term > last_log_term ||
-            (request.last_log_term == last_log_term && request.last_log_index >= last_log_index);
+        let candidate_log_up_to_date = request.last_log_term > last_log_term
+            || (request.last_log_term == last_log_term && request.last_log_index >= last_log_index);
 
         if candidate_log_up_to_date {
             // Try to vote for candidate
@@ -119,7 +125,10 @@ impl RaftNode {
     }
 
     /// Handles AppendEntries RPC
-    pub fn handle_append_entries(&mut self, request: AppendEntriesRequest) -> AppendEntriesResponse {
+    pub fn handle_append_entries(
+        &mut self,
+        request: AppendEntriesRequest,
+    ) -> AppendEntriesResponse {
         let current_term = self.state.get_current_term();
 
         // If request term is older, reject
@@ -174,6 +183,7 @@ impl RaftNode {
 
         // Bulk append all entries
         for entry in request.entries {
+            println!("Appending entry from {}: {:?}", self.get_node_id(), entry);
             if let Err(_) = self.log.append_entry(entry) {
                 return AppendEntriesResponse::failure(current_term, self.log.last_index());
             }
@@ -213,23 +223,22 @@ impl RaftNode {
 
         // Create a single RequestVote request (identical for all other nodes)
         let (last_log_index, last_log_term) = self.get_last_log_info();
-        let request = RequestVoteRequest::new(
-            new_term,
-            self.config.node_id,
-            last_log_index,
-            last_log_term,
-        );
+        let request =
+            RequestVoteRequest::new(new_term, self.config.node_id, last_log_index, last_log_term);
 
         Some(request)
     }
 
-
-
     /// Handles a RequestVote response and returns true if election is won
-    pub fn handle_vote_response(&mut self, from_node: NodeId, response: RequestVoteResponse) -> bool {
+    pub fn handle_vote_response(
+        &mut self,
+        from_node: NodeId,
+        response: RequestVoteResponse,
+    ) -> bool {
         // Only process votes for current election term
-        if response.term != self.current_election_term ||
-           self.state.get_server_state() != ServerState::Candidate {
+        if response.term != self.current_election_term
+            || self.state.get_server_state() != ServerState::Candidate
+        {
             return false;
         }
 
@@ -262,8 +271,8 @@ impl RaftNode {
 
     /// Checks if currently in an election
     pub fn is_in_election(&self) -> bool {
-        self.state.get_server_state() == ServerState::Candidate &&
-        self.current_election_term == self.state.get_current_term()
+        self.state.get_server_state() == ServerState::Candidate
+            && self.current_election_term == self.state.get_current_term()
     }
 
     /// Becomes leader (initializes leader state)
@@ -285,12 +294,8 @@ impl RaftNode {
         }
 
         // Send initial heartbeat/NoOp entry to establish leadership
-        let noop_entry = LogEntry::new_with_type(
-            self.state.get_current_term(),
-            0,
-            EntryType::NoOp,
-            vec![]
-        );
+        let noop_entry =
+            LogEntry::new_with_type(self.state.get_current_term(), 0, EntryType::NoOp, vec![]);
         if let Err(_) = self.log.append_entry(noop_entry) {
             // Log append failed, but we're still leader
         }
@@ -314,7 +319,10 @@ impl RaftNode {
             let next_idx = self.next_index.get(&node.node_id).copied().unwrap_or(1);
             let prev_log_index = if next_idx > 1 { next_idx - 1 } else { 0 };
             let prev_log_term = if prev_log_index > 0 {
-                self.log.get_entry(prev_log_index).map(|e| e.term).unwrap_or(0)
+                self.log
+                    .get_entry(prev_log_index)
+                    .map(|e| e.term)
+                    .unwrap_or(0)
             } else {
                 0
             };
@@ -369,7 +377,7 @@ impl RaftNode {
         &mut self,
         from_node: NodeId,
         request: &AppendEntriesRequest,
-        response: AppendEntriesResponse
+        response: AppendEntriesResponse,
     ) -> bool {
         if self.state.get_server_state() != ServerState::Leader {
             return false;
@@ -400,7 +408,11 @@ impl RaftNode {
         } else {
             // Failure: decrement next_index and retry
             let current_next = self.next_index.get(&from_node).copied().unwrap_or(1);
-            let new_next = if current_next > 1 { current_next - 1 } else { 1 };
+            let new_next = if current_next > 1 {
+                current_next - 1
+            } else {
+                1
+            };
             self.next_index.insert(from_node, new_next);
             false
         }
@@ -442,7 +454,10 @@ impl RaftNode {
     }
 
     /// Appends a new entry to the log (leader only)
-    pub fn append_new_entry(&mut self, payload: Vec<u8>) -> Result<u64, Box<dyn std::error::Error>> {
+    pub fn append_new_entry(
+        &mut self,
+        payload: Vec<u8>,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
         if self.state.get_server_state() != ServerState::Leader {
             return Err("Only leader can append entries".into());
         }
@@ -480,7 +495,11 @@ mod tests {
     fn create_test_node(node_id: NodeId) -> (RaftNode, TempDir) {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
-        let meta_path = temp_dir.path().join("raft_state.meta").to_string_lossy().to_string();
+        let meta_path = temp_dir
+            .path()
+            .join("raft_state.meta")
+            .to_string_lossy()
+            .to_string();
 
         let nodes = vec![
             NodeInfo::new(1, "127.0.0.1".to_string(), 8001),
@@ -495,6 +514,8 @@ mod tests {
             meta_path,
             1024,
             100,
+            (150, 300), // Election timeout range
+            50,         // Heartbeat interval
         );
 
         let node = RaftNode::new(config).expect("Failed to create RaftNode");
@@ -612,11 +633,16 @@ mod tests {
         let entry1 = LogEntry::new_with_type(1, 0, EntryType::Normal, "cmd1".as_bytes().to_vec());
         let entry2 = LogEntry::new_with_type(1, 0, EntryType::Normal, "cmd2".as_bytes().to_vec());
 
-        node.log.append_entry(entry1).expect("Failed to append entry");
-        node.log.append_entry(entry2).expect("Failed to append entry");
+        node.log
+            .append_entry(entry1)
+            .expect("Failed to append entry");
+        node.log
+            .append_entry(entry2)
+            .expect("Failed to append entry");
 
         // Test AppendEntries with correct previous entry
-        let new_entry = LogEntry::new_with_type(1, 3, EntryType::Normal, "cmd3".as_bytes().to_vec());
+        let new_entry =
+            LogEntry::new_with_type(1, 3, EntryType::Normal, "cmd3".as_bytes().to_vec());
         let append_request = AppendEntriesRequest::new(1, 2, 2, 1, vec![new_entry], 0);
 
         let response = node.handle_append_entries(append_request);
@@ -624,7 +650,8 @@ mod tests {
         assert_eq!(node.get_log_length(), 3);
 
         // Test AppendEntries with incorrect previous entry
-        let new_entry2 = LogEntry::new_with_type(1, 4, EntryType::Normal, "cmd4".as_bytes().to_vec());
+        let new_entry2 =
+            LogEntry::new_with_type(1, 4, EntryType::Normal, "cmd4".as_bytes().to_vec());
         let bad_request = AppendEntriesRequest::new(1, 2, 5, 1, vec![new_entry2], 0);
 
         let response2 = node.handle_append_entries(bad_request);
@@ -683,8 +710,12 @@ mod tests {
         }
 
         // Leader appends some entries using the new API
-        node1.append_new_entry("command1".as_bytes().to_vec()).expect("Failed to append entry");
-        node1.append_new_entry("command2".as_bytes().to_vec()).expect("Failed to append entry");
+        node1
+            .append_new_entry("command1".as_bytes().to_vec())
+            .expect("Failed to append entry");
+        node1
+            .append_new_entry("command2".as_bytes().to_vec())
+            .expect("Failed to append entry");
 
         // Leader replicates entries to followers using the new API
         let append_requests = node1.create_append_entries_requests();
@@ -715,8 +746,12 @@ mod tests {
         println!("   - Leader: Node {}", node1.get_node_id());
         println!("   - Term: {}", node1.get_current_term());
         println!("   - Log entries replicated: {}", node1.get_log_length());
-        println!("   - All nodes in sync: Node1={}, Node2={}, Node3={}",
-                 node1.get_log_length(), node2.get_log_length(), node3.get_log_length());
+        println!(
+            "   - All nodes in sync: Node1={}, Node2={}, Node3={}",
+            node1.get_log_length(),
+            node2.get_log_length(),
+            node3.get_log_length()
+        );
     }
 
     #[test]
@@ -760,8 +795,12 @@ mod tests {
         leader.become_leader();
 
         // Leader appends some entries
-        let entry_index1 = leader.append_new_entry("command1".as_bytes().to_vec()).expect("Failed to append");
-        let entry_index2 = leader.append_new_entry("command2".as_bytes().to_vec()).expect("Failed to append");
+        let entry_index1 = leader
+            .append_new_entry("command1".as_bytes().to_vec())
+            .expect("Failed to append");
+        let entry_index2 = leader
+            .append_new_entry("command2".as_bytes().to_vec())
+            .expect("Failed to append");
 
         assert_eq!(entry_index1, 2); // After NoOp entry
         assert_eq!(entry_index2, 3);
@@ -814,8 +853,12 @@ mod tests {
         leader.become_leader();
 
         // Leader has entries 1 (NoOp), 2, 3
-        leader.append_new_entry("command1".as_bytes().to_vec()).expect("Failed to append");
-        leader.append_new_entry("command2".as_bytes().to_vec()).expect("Failed to append");
+        leader
+            .append_new_entry("command1".as_bytes().to_vec())
+            .expect("Failed to append");
+        leader
+            .append_new_entry("command2".as_bytes().to_vec())
+            .expect("Failed to append");
 
         // Manually set next_index to simulate follower being far behind
         leader.next_index.insert(2, 5); // Trying to send from index 5, but follower only has 0 entries
@@ -876,8 +919,12 @@ mod tests {
         }
 
         // Add some entries to the leader's log
-        leader.append_new_entry("command1".as_bytes().to_vec()).expect("Failed to append");
-        leader.append_new_entry("command2".as_bytes().to_vec()).expect("Failed to append");
+        leader
+            .append_new_entry("command1".as_bytes().to_vec())
+            .expect("Failed to append");
+        leader
+            .append_new_entry("command2".as_bytes().to_vec())
+            .expect("Failed to append");
 
         // Now followers are even further behind, so requests should contain more log entries
         let replication_requests = leader.create_append_entries_requests();
@@ -890,7 +937,7 @@ mod tests {
         // Simulate followers catching up by updating their match_index
         for node in leader.config.get_other_nodes() {
             leader.match_index.insert(node.node_id, 3); // Caught up to entry 3
-            leader.next_index.insert(node.node_id, 4);   // Next entry to send is 4
+            leader.next_index.insert(node.node_id, 4); // Next entry to send is 4
         }
 
         // Now followers are up-to-date again, so requests should be heartbeats
@@ -906,10 +953,19 @@ mod tests {
         assert_eq!(heartbeat_requests, convenience_requests);
 
         println!("✅ Natural AppendEntries behavior test completed successfully!");
-        println!("   - Initial state: {} replication requests with {} entries each (NoOp)",
-                 initial_requests.len(), initial_requests[0].1.entries.len());
-        println!("   - After new entries: {} replication requests with {} entries each",
-                 replication_requests.len(), replication_requests[0].1.entries.len());
-        println!("   - After catch-up: {} heartbeat requests", heartbeat_requests.len());
+        println!(
+            "   - Initial state: {} replication requests with {} entries each (NoOp)",
+            initial_requests.len(),
+            initial_requests[0].1.entries.len()
+        );
+        println!(
+            "   - After new entries: {} replication requests with {} entries each",
+            replication_requests.len(),
+            replication_requests[0].1.entries.len()
+        );
+        println!(
+            "   - After catch-up: {} heartbeat requests",
+            heartbeat_requests.len()
+        );
     }
 }

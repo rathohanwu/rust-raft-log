@@ -3,8 +3,8 @@ use tempfile::TempDir;
 use std::collections::HashSet;
 
 use raft_log::{
-    ClusterConfig, NodeInfo, RaftNode, 
-    RaftGrpcServer, RaftTimingConfig, ServerState
+    ClusterConfig, NodeInfo, RaftNode,
+    RaftGrpcServer, ServerState
 };
 
 /// Integration test that starts three real servers and waits for leader election
@@ -25,12 +25,14 @@ async fn test_three_server_leader_election() {
     let temp_dir2 = TempDir::new().expect("Failed to create temp dir 2");
     let temp_dir3 = TempDir::new().expect("Failed to create temp dir 3");
 
-    // Create cluster configurations for each node
+    // Create cluster configurations for each node with fast timing for testing
     let config1 = ClusterConfig::new(
         1, nodes.clone(),
         temp_dir1.path().join("logs").to_string_lossy().to_string(),
         temp_dir1.path().join("raft_state.meta").to_string_lossy().to_string(),
         1024 * 1024, 100,
+        (500, 1500), // Wider range to prevent split votes
+        100,         // Fast heartbeat for testing
     );
 
     let config2 = ClusterConfig::new(
@@ -38,6 +40,8 @@ async fn test_three_server_leader_election() {
         temp_dir2.path().join("logs").to_string_lossy().to_string(),
         temp_dir2.path().join("raft_state.meta").to_string_lossy().to_string(),
         1024 * 1024, 100,
+        (500, 1500), // Wider range to prevent split votes
+        100,         // Fast heartbeat for testing
     );
 
     let config3 = ClusterConfig::new(
@@ -45,6 +49,8 @@ async fn test_three_server_leader_election() {
         temp_dir3.path().join("logs").to_string_lossy().to_string(),
         temp_dir3.path().join("raft_state.meta").to_string_lossy().to_string(),
         1024 * 1024, 100,
+        (500, 1500), // Wider range to prevent split votes
+        100,         // Fast heartbeat for testing
     );
 
     // Create RaftNodes
@@ -54,16 +60,10 @@ async fn test_three_server_leader_election() {
 
     println!("✅ Created 3 RaftNodes");
 
-    // Create timing configuration for faster testing
-    let timing_config = RaftTimingConfig {
-        election_timeout_range: (1000, 2000), // 1-2 seconds for faster testing
-        heartbeat_interval: 300, // 300ms heartbeats
-    };
-
-    // Create gRPC servers
-    let server1 = RaftGrpcServer::new_with_timing(raft_node1, Some(timing_config.clone()));
-    let server2 = RaftGrpcServer::new_with_timing(raft_node2, Some(timing_config.clone()));
-    let server3 = RaftGrpcServer::new_with_timing(raft_node3, Some(timing_config.clone()));
+    // Create gRPC servers (timing is now configured in ClusterConfig)
+    let server1 = RaftGrpcServer::new(raft_node1);
+    let server2 = RaftGrpcServer::new(raft_node2);
+    let server3 = RaftGrpcServer::new(raft_node3);
 
     println!("✅ Created gRPC servers with fast timing for testing");
 

@@ -408,6 +408,8 @@ mod tests {
             meta_path,
             1024, // 1KB segments for testing
             1000, // max_entries_per_query
+            (150, 300), // Election timeout range
+            50,         // Heartbeat interval
         );
         (cluster_config, temp_dir)
     }
@@ -433,6 +435,8 @@ mod tests {
             meta_path,
             1024, // 1KB segments for testing
             1000, // max_entries_per_query
+            (150, 300), // Election timeout range
+            50,         // Heartbeat interval
         )
     }
 

@@ -142,6 +142,10 @@ pub struct ClusterConfig {
     pub log_segment_size: u64,
     /// Maximum entries per query (for get_entries)
     pub max_entries_per_query: usize,
+    /// Election timeout range in milliseconds (min, max)
+    pub election_timeout_range: (u64, u64),
+    /// Heartbeat interval in milliseconds
+    pub heartbeat_interval: u64,
 }
 
 impl ClusterConfig {
@@ -153,6 +157,8 @@ impl ClusterConfig {
         meta_file_path: String,
         log_segment_size: u64,
         max_entries_per_query: usize,
+        election_timeout_range: (u64, u64),
+        heartbeat_interval: u64,
     ) -> Self {
         ClusterConfig {
             node_id,
@@ -161,7 +167,30 @@ impl ClusterConfig {
             meta_file_path,
             log_segment_size,
             max_entries_per_query,
+            election_timeout_range,
+            heartbeat_interval,
         }
+    }
+
+    /// Creates a new ClusterConfig with production-ready default timing
+    pub fn new_with_default_timing(
+        node_id: NodeId,
+        nodes: Vec<NodeInfo>,
+        log_directory: String,
+        meta_file_path: String,
+        log_segment_size: u64,
+        max_entries_per_query: usize,
+    ) -> Self {
+        Self::new(
+            node_id,
+            nodes,
+            log_directory,
+            meta_file_path,
+            log_segment_size,
+            max_entries_per_query,
+            (150, 500), // Production-ready election timeout range
+            50,         // Production-ready heartbeat interval
+        )
     }
 
     /// Creates a default test configuration for a 3-node cluster
@@ -172,14 +201,16 @@ impl ClusterConfig {
             NodeInfo::new(3, "127.0.0.1".to_string(), 8003),
         ];
 
-        ClusterConfig {
+        Self::new(
             node_id,
             nodes,
-            log_directory: format!("./test_logs_node_{}", node_id),
-            meta_file_path: format!("./test_logs_node_{}/raft_state.meta", node_id),
-            log_segment_size: 1024 * 1024, // 1MB segments
-            max_entries_per_query: 100,
-        }
+            format!("./test_logs_node_{}", node_id),
+            format!("./test_logs_node_{}/raft_state.meta", node_id),
+            1024 * 1024, // 1MB segments
+            100,
+            (100, 200), // Fast timing for tests
+            30,         // Fast heartbeat for tests
+        )
     }
 
     /// Creates a single-node test configuration (for simple tests)
@@ -188,14 +219,16 @@ impl ClusterConfig {
             NodeInfo::new(node_id, "127.0.0.1".to_string(), 8000 + node_id as u16),
         ];
 
-        ClusterConfig {
+        Self::new(
             node_id,
             nodes,
-            log_directory: format!("./test_logs_node_{}", node_id),
-            meta_file_path: format!("./test_logs_node_{}/raft_state.meta", node_id),
-            log_segment_size: 1024 * 1024, // 1MB segments
-            max_entries_per_query: 100,
-        }
+            format!("./test_logs_node_{}", node_id),
+            format!("./test_logs_node_{}/raft_state.meta", node_id),
+            1024 * 1024, // 1MB segments
+            100,
+            (100, 200), // Fast timing for tests
+            30,         // Fast heartbeat for tests
+        )
     }
 
     /// Gets this node's information
@@ -355,6 +388,8 @@ mod tests {
             "/var/raft/state.meta".to_string(),
             1024 * 1024, // 1MB segments
             1000,
+            (150, 500), // Election timeout range
+            50,         // Heartbeat interval
         );
 
         assert_eq!(config.node_id, 2);
