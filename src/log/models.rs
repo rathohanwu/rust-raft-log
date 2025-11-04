@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
 
 /// Type of log entry for Raft consensus
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +125,117 @@ impl NodeInfo {
     /// Gets the node's address as "ip:port"
     pub fn get_address(&self) -> String {
         format!("{}:{}", self.ip_address, self.port)
+    }
+}
+
+/// YAML-compatible node configuration
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct YamlNodeInfo {
+    pub node_id: NodeId,
+    pub ip_address: String,
+    pub port: u16,
+}
+
+impl From<YamlNodeInfo> for NodeInfo {
+    fn from(yaml_node: YamlNodeInfo) -> Self {
+        NodeInfo::new(yaml_node.node_id, yaml_node.ip_address, yaml_node.port)
+    }
+}
+
+/// YAML-compatible cluster settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YamlClusterSettings {
+    #[serde(default = "default_log_directory")]
+    pub log_directory: String,
+    #[serde(default = "default_log_segment_size")]
+    pub log_segment_size: u64,
+    #[serde(default = "default_max_entries_per_query")]
+    pub max_entries_per_query: usize,
+    #[serde(default = "default_election_timeout_range")]
+    pub election_timeout_range: YamlElectionTimeoutRange,
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval: u64,
+}
+
+/// YAML-compatible election timeout range
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YamlElectionTimeoutRange {
+    pub min: u64,
+    pub max: u64,
+}
+
+/// YAML-compatible cluster configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YamlClusterConfig {
+    pub nodes: Vec<YamlNodeInfo>,
+    #[serde(default)]
+    pub cluster_settings: YamlClusterSettings,
+}
+
+// Default functions for serde
+fn default_log_directory() -> String {
+    "./raft_logs".to_string()
+}
+
+fn default_log_segment_size() -> u64 {
+    64 * 1024 * 1024 // 64MB
+}
+
+fn default_max_entries_per_query() -> usize {
+    1000
+}
+
+fn default_election_timeout_range() -> YamlElectionTimeoutRange {
+    YamlElectionTimeoutRange { min: 150, max: 500 }
+}
+
+fn default_heartbeat_interval() -> u64 {
+    50
+}
+
+impl Default for YamlClusterSettings {
+    fn default() -> Self {
+        YamlClusterSettings {
+            log_directory: default_log_directory(),
+            log_segment_size: default_log_segment_size(),
+            max_entries_per_query: default_max_entries_per_query(),
+            election_timeout_range: default_election_timeout_range(),
+            heartbeat_interval: default_heartbeat_interval(),
+        }
+    }
+}
+
+impl YamlClusterConfig {
+    /// Load cluster configuration from a YAML file
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        let config: YamlClusterConfig = serde_yaml::from_str(&content)?;
+        Ok(config)
+    }
+
+    /// Convert to ClusterConfig for a specific node
+    pub fn to_cluster_config(&self, node_id: NodeId) -> Result<ClusterConfig, Box<dyn std::error::Error>> {
+        let nodes: Vec<NodeInfo> = self.nodes.iter().map(|n| n.clone().into()).collect();
+
+        // Verify the node_id exists in the configuration
+        if !nodes.iter().any(|n| n.node_id == node_id) {
+            return Err(format!("Node ID {} not found in cluster configuration", node_id).into());
+        }
+
+        let settings = &self.cluster_settings;
+        let meta_file_path = format!("{}/node_{}/raft_state.meta", settings.log_directory, node_id);
+        let log_directory = format!("{}/node_{}", settings.log_directory, node_id);
+
+        Ok(ClusterConfig::new(
+            node_id,
+            nodes,
+            log_directory,
+            meta_file_path,
+            settings.log_segment_size,
+            settings.max_entries_per_query,
+            (settings.election_timeout_range.min, settings.election_timeout_range.max),
+            settings.heartbeat_interval,
+        ))
     }
 }
 

@@ -91,6 +91,20 @@ impl RaftGrpcClient {
         Ok(rust_response)
     }
 
+    /// Send a client request to the specified node
+    pub async fn client_request(
+        &self,
+        node_id: NodeId,
+        payload: Vec<u8>,
+    ) -> Result<proto::ClientResponseMessage, Status> {
+        let mut client = self.get_connection(node_id).await?;
+
+        let proto_request = proto::ClientRequestMessage { payload };
+        let response = client.client_request(Request::new(proto_request)).await?;
+
+        Ok(response.into_inner())
+    }
+
     /// Send RequestVote RPCs to all other nodes in the cluster
     /// Returns a vector of (node_id, result) pairs
     pub async fn broadcast_request_vote(

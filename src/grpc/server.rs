@@ -82,6 +82,64 @@ impl RaftService for RaftGrpcService {
         let proto_response: proto::AppendEntriesResponse = response.into();
         Ok(Response::new(proto_response))
     }
+
+    async fn client_request(
+        &self,
+        request: Request<proto::ClientRequestMessage>,
+    ) -> Result<Response<proto::ClientResponseMessage>, Status> {
+        let proto_request = request.into_inner();
+
+        let response = tokio::task::spawn_blocking({
+            let raft_node = self.raft_node.clone();
+            move || {
+                let mut node = raft_node
+                    .lock()
+                    .map_err(|_| Status::internal("Failed to acquire lock on RaftNode"))?;
+
+                // Check if this node is the leader
+                if node.get_server_state() != crate::log::models::ServerState::Leader {
+                    // Not the leader - return error with leader hint if we know it
+                    let leader_id = node.get_current_leader().unwrap_or(0);
+                    let error_message = if leader_id != 0 {
+                        format!("Not the leader. Current leader is node {}", leader_id)
+                    } else {
+                        "Not the leader. Current leader is unknown".to_string()
+                    };
+
+                    return Ok::<proto::ClientResponseMessage, Status>(proto::ClientResponseMessage {
+                        success: false,
+                        leader_id,
+                        log_index: 0,
+                        error_message,
+                    });
+                }
+
+                // We are the leader - append the entry
+                match node.append_new_entry(proto_request.payload) {
+                    Ok(log_index) => {
+                        Ok::<proto::ClientResponseMessage, Status>(proto::ClientResponseMessage {
+                            success: true,
+                            leader_id: node.get_node_id(),
+                            log_index,
+                            error_message: String::new(),
+                        })
+                    }
+                    Err(e) => {
+                        Ok::<proto::ClientResponseMessage, Status>(proto::ClientResponseMessage {
+                            success: false,
+                            leader_id: 0,
+                            log_index: 0,
+                            error_message: format!("Failed to append entry: {}", e),
+                        })
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| Status::internal("Task join error"))??;
+
+        Ok(Response::new(response))
+    }
 }
 
 /// gRPC server that hosts the Raft service (only receives requests)
@@ -124,16 +182,16 @@ impl RaftGrpcServer {
 
         println!("Starting Raft gRPC server on {}", addr);
 
-        // Start gRPC server
-        let server_result = Server::builder().add_service(svc).serve(addr).await;
-
-        // Start event loop in background
+        // Start event loop in background FIRST
         let event_loop_handle = {
             let event_loop = self.event_loop.clone();
             tokio::spawn(async move {
                 event_loop.run().await;
             })
         };
+
+        // Start gRPC server (this blocks until server stops)
+        let server_result = Server::builder().add_service(svc).serve(addr).await;
 
         // Shutdown event loop when server stops
         self.event_loop.shutdown();

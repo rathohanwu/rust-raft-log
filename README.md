@@ -356,6 +356,124 @@ raft_logs/
 
 Each node maintains its own isolated log storage to prevent conflicts.
 
+## 🖥️ Client Usage
+
+### Step-by-Step Guide
+
+#### 1. Start the Raft Cluster
+
+**Option A: Using the convenience script (Recommended)**
+```bash
+# Make the script executable (first time only)
+chmod +x run_cluster.sh
+
+# Start the entire 3-node cluster
+./run_cluster.sh
+```
+
+**Option B: Manual startup**
+```bash
+# Build the project first
+cargo build --release
+
+# Start each node in separate terminals
+# Terminal 1
+./target/release/rust-raft-log --node-id 1 --config cluster_config.yaml
+
+# Terminal 2
+./target/release/rust-raft-log --node-id 2 --config cluster_config.yaml
+
+# Terminal 3
+./target/release/rust-raft-log --node-id 3 --config cluster_config.yaml
+```
+
+#### 2. Wait for Leader Election
+
+After starting the cluster, wait 2-3 seconds for leader election to complete. You'll see log messages indicating which node becomes the leader:
+
+```
+✅ Node 2 became leader for term 1
+```
+
+#### 3. Use the Raft Client
+
+The client CLI allows you to send commands to the Raft cluster:
+
+**Basic Usage:**
+```bash
+# Build the client (first time only)
+cargo build --bin raft-client
+
+# Send a command to the cluster
+./target/debug/raft-client --config cluster_config.yaml --payload "Hello, Raft!"
+```
+
+**Advanced Usage:**
+```bash
+# Target a specific node initially
+./target/debug/raft-client --config cluster_config.yaml --payload "Test message" --node-id 2
+
+# Configure retry behavior
+./target/debug/raft-client --config cluster_config.yaml --payload "Important data" --max-retries 5 --retry-delay-ms 500
+
+# Short form flags
+./target/debug/raft-client -c cluster_config.yaml -p "Quick test" -n 1
+```
+
+### Client Command-Line Options
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--config` | `-c` | Path to cluster configuration file | Required |
+| `--payload` | `-p` | Command/data to append to the log | Required |
+| `--node-id` | `-n` | Initial target node ID (1, 2, or 3) | 1 |
+| `--max-retries` | | Maximum number of retry attempts | 3 |
+| `--retry-delay-ms` | | Delay between retries in milliseconds | 1000 |
+| `--help` | `-h` | Show help information | |
+
+### Example Client Session
+
+```bash
+# Start the cluster
+./run_cluster.sh
+
+# Wait a few seconds, then send commands
+./target/debug/raft-client -c cluster_config.yaml -p "First entry"
+# Output: ✅ Successfully appended entry at log index 1
+
+./target/debug/raft-client -c cluster_config.yaml -p "Second entry" -n 3
+# Output: 🎯 Server suggested leader is node 2, trying immediately
+# Output: ✅ Successfully appended entry at log index 2
+
+./target/debug/raft-client -c cluster_config.yaml -p "Third entry"
+# Output: ✅ Successfully appended entry at log index 3
+```
+
+### Client Features
+
+- **🎯 Smart Leader Discovery**: Automatically finds the current leader
+- **🔄 Intelligent Retry Logic**: Retries failed requests with exponential backoff
+- **⚡ Leader Redirection**: Uses server hints to quickly find the leader
+- **🛡️ Fault Tolerance**: Handles network failures and leadership changes
+- **📊 Progress Feedback**: Shows detailed status and progress information
+
+### Troubleshooting Client Issues
+
+**"All nodes have been tried and failed"**
+- Ensure the cluster is running and has elected a leader
+- Check that the configuration file path is correct
+- Verify network connectivity to cluster nodes
+
+**"Connection refused"**
+- Make sure the cluster nodes are started and listening
+- Check if the ports in `cluster_config.yaml` are correct
+- Ensure no firewall is blocking the connections
+
+**"Not the leader" errors**
+- This is normal during leader elections or leadership changes
+- The client will automatically retry with the correct leader
+- Wait a few seconds for the cluster to stabilize
+
 ## 📖 Usage Examples & Advanced Topics
 
 ### Deployment Examples

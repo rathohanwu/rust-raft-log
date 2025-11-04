@@ -36,7 +36,8 @@ async fn test_three_server_leader_election() {
     );
 
     let config2 = ClusterConfig::new(
-        2, nodes.clone(),
+        2,
+        nodes.clone(),
         temp_dir2.path().join("logs").to_string_lossy().to_string(),
         temp_dir2.path().join("raft_state.meta").to_string_lossy().to_string(),
         1024 * 1024, 100,
@@ -45,7 +46,8 @@ async fn test_three_server_leader_election() {
     );
 
     let config3 = ClusterConfig::new(
-        3, nodes.clone(),
+        3,
+        nodes.clone(),
         temp_dir3.path().join("logs").to_string_lossy().to_string(),
         temp_dir3.path().join("raft_state.meta").to_string_lossy().to_string(),
         1024 * 1024, 100,

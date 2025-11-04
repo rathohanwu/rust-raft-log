@@ -33,6 +33,9 @@ tokio-stream = "0.1"
 
 # Random number generation for election timeouts
 rand = "0.8"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yaml = "0.9.34"
+clap = { version = "4.5.51", features = ["derive"] }
 
 [dev-dependencies]
 # Testing utilities
@@ -46,6 +49,14 @@ tonic-prost-build = "0.14.2"
 [lib]
 name = "raft_log"
 path = "src/lib.rs"
+
+[[bin]]
+name = "rust-raft-log"
+path = "src/main.rs"
+
+[[bin]]
+name = "raft-client"
+path = "src/bin/client.rs"
 
 [profile.release]
 lto = true

@@ -1,0 +1,23 @@
+# Raft Cluster Configuration
+# This file defines the nodes in the Raft cluster
+
+nodes:
+  - node_id: 1
+    ip_address: "127.0.0.1"
+    port: 18001
+  - node_id: 2
+    ip_address: "127.0.0.1"
+    port: 18002
+  - node_id: 3
+    ip_address: "127.0.0.1"
+    port: 18003
+
+# Optional cluster settings (with defaults)
+cluster_settings:
+  log_directory: "./raft_logs"
+  log_segment_size: 67108864  # 64MB in bytes
+  max_entries_per_query: 1000
+  election_timeout_range:
+    min: 150
+    max: 500
+  heartbeat_interval: 50

@@ -20,6 +20,8 @@ pub struct RaftNode {
     /// Volatile candidate state (only used when this node is candidate)
     votes_received: HashSet<NodeId>,
     current_election_term: u64,
+    /// Current leader ID (volatile state, None if unknown)
+    current_leader: Option<NodeId>,
 }
 
 impl RaftNode {
@@ -27,7 +29,13 @@ impl RaftNode {
     pub fn new(config: ClusterConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let log_config = config.to_raft_log_config();
         let log = RaftLog::new(log_config)?;
-        let state = RaftState::new(&config.meta_file_path)?;
+
+        // Check if state file exists and load accordingly
+        let state = if std::path::Path::new(&config.meta_file_path).exists() {
+            RaftState::from_existing(&config.meta_file_path)?
+        } else {
+            RaftState::new(&config.meta_file_path)?
+        };
 
         Ok(RaftNode {
             config,
@@ -37,6 +45,7 @@ impl RaftNode {
             match_index: HashMap::new(),
             votes_received: HashSet::new(),
             current_election_term: 0,
+            current_leader: None,
         })
     }
 
@@ -53,6 +62,11 @@ impl RaftNode {
     /// Gets the current term
     pub fn get_current_term(&self) -> u64 {
         self.state.get_current_term()
+    }
+
+    /// Gets the current leader ID (None if unknown)
+    pub fn get_current_leader(&self) -> Option<NodeId> {
+        self.current_leader
     }
 
     /// Gets the cluster configuration
@@ -101,6 +115,8 @@ impl RaftNode {
         // If request term is newer, update our term and become follower
         let current_term = if request.term > current_term {
             self.state.start_new_term_as_follower(request.term);
+            // Clear current leader since we're stepping down
+            self.current_leader = None;
             request.term
         } else {
             current_term
@@ -139,12 +155,16 @@ impl RaftNode {
         // If request term is newer, update our term and become follower
         let current_term = if request.term > current_term {
             self.state.start_new_term_as_follower(request.term);
+            // Track the new leader
+            self.current_leader = Some(request.leader_id);
             request.term
         } else {
             // Valid leader for current term, become follower if not already
             if self.state.get_server_state() != ServerState::Follower {
                 self.state.transition_to_state(ServerState::Follower);
             }
+            // Track the current leader
+            self.current_leader = Some(request.leader_id);
             current_term
         };
 
@@ -214,6 +234,9 @@ impl RaftNode {
         self.votes_received.clear();
         self.current_election_term = new_term;
 
+        // Clear current leader since we're starting an election
+        self.current_leader = None;
+
         // Vote for ourselves
         if !self.state.vote_for_candidate(self.config.node_id) {
             // This shouldn't happen since we just cleared the vote
@@ -278,6 +301,9 @@ impl RaftNode {
     /// Becomes leader (initializes leader state)
     pub fn become_leader(&mut self) {
         self.state.transition_to_state(ServerState::Leader);
+
+        // Set self as the current leader
+        self.current_leader = Some(self.config.node_id);
 
         // Clear election state
         self.votes_received.clear();
@@ -388,6 +414,8 @@ impl RaftNode {
             self.state.start_new_term_as_follower(response.term);
             self.next_index.clear();
             self.match_index.clear();
+            // Clear current leader since we're stepping down
+            self.current_leader = None;
             return false;
         }
 
