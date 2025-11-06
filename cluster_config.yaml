@@ -18,6 +18,6 @@ cluster_settings:
   log_segment_size: 67108864  # 64MB in bytes
   max_entries_per_query: 1000
   election_timeout_range:
-    min: 150
-    max: 500
-  heartbeat_interval: 50
+    min: 300
+    max: 450
+  heartbeat_interval: 150

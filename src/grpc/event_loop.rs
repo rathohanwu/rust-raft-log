@@ -1,11 +1,9 @@
-use rand::Rng;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::{interval, sleep, Instant};
 
 use super::client::RaftGrpcClient;
-use crate::log::{models::{ServerState, ClusterConfig}, RaftNode, RequestVoteRequest};
+use crate::log::{models::ClusterConfig, RaftNode, RequestVoteRequest};
 use crate::ServerState::*;
 
 /// Configuration for Raft timing parameters
@@ -37,8 +35,6 @@ pub struct RaftEventLoop {
     timing_config: RaftTimingConfig,
     shutdown_signal: Arc<Mutex<bool>>,
     last_heartbeat: Arc<Mutex<Instant>>,
-    /// Counter to ensure unique timeout values across multiple calls
-    timeout_counter: Arc<AtomicU64>,
 }
 
 impl RaftEventLoop {
@@ -58,7 +54,6 @@ impl RaftEventLoop {
             timing_config,
             shutdown_signal: Arc::new(Mutex::new(false)),
             last_heartbeat: Arc::new(Mutex::new(Instant::now())),
-            timeout_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -233,58 +228,32 @@ impl RaftEventLoop {
         }
     }
 
-    /// Generate a random election timeout with improved variance to reduce split votes
+    /// Generate a deterministic election timeout based on node ID to reduce split votes
     ///
-    /// This implementation uses multiple randomization techniques:
-    /// 1. Multiple independent random sources for better variance
-    /// 2. Non-uniform distribution using power functions
-    /// 3. Additional jitter layers for extra randomization
-    /// 4. Unique counter to ensure different values across calls
-    /// 5. Wider effective range to spread timeouts further apart
+    /// Uses the formula: election_timeout = min_timeout + ((max_timeout - min_timeout) / total_nodes) * node_id
+    ///
+    /// This approach:
+    /// 1. Ensures each node has a different, predictable election timeout
+    /// 2. Distributes timeouts evenly across the configured range
+    /// 3. Reduces the probability of simultaneous elections and split votes
+    /// 4. Maintains deterministic behavior for easier debugging and testing
     fn generate_election_timeout(&self) -> Duration {
-        let mut rng = rand::thread_rng();
         let (min_ms, max_ms) = self.timing_config.election_timeout_range;
 
-        // Calculate base range and expand it for better variance
-        let base_range = max_ms - min_ms;
+        // Get node ID and total number of nodes from the cluster configuration
+        let (node_id, total_nodes) = {
+            let node = self.raft_node.lock().unwrap();
+            let config = node.get_config();
+            (config.node_id as u64, config.cluster_size() as u64)
+        };
 
-        // Use multiple random sources and combine them more carefully
-        // Primary random component - use power distribution for non-uniform spread
-        let uniform1: f64 = rng.gen(); // 0.0 to 1.0
-        let power_sample = uniform1.powf(0.6); // Power < 1 creates bias toward smaller values
-        let primary_offset = (power_sample * (base_range as f64 * 2.5)) as u64;
+        // Apply the deterministic formula:
+        // election_timeout = min_timeout + ((max_timeout - min_timeout) / total_nodes) * node_id
+        let timeout_range = max_ms - min_ms;
+        let node_offset = (timeout_range * node_id) / total_nodes;
+        let timeout_ms = min_ms + node_offset;
 
-        // Secondary random component - uniform distribution for additional spread
-        let uniform2: f64 = rng.gen();
-        let secondary_offset = (uniform2 * base_range as f64) as u64;
-
-        // Tertiary random component - exponential-like distribution
-        let uniform3: f64 = rng.gen();
-        let exp_like = (-uniform3.ln() * 0.5).min(2.0); // Capped exponential
-        let tertiary_offset = (exp_like * base_range as f64 * 0.8) as u64;
-
-        // Add unique counter-based offset to ensure different values across calls
-        let counter = self.timeout_counter.fetch_add(1, Ordering::Relaxed);
-        let counter_offset = (counter % 100) * (base_range / 50); // Spread based on call count
-
-        // Add time-based microsecond jitter for additional uniqueness
-        let time_jitter = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_micros() as u64) % (base_range / 2);
-
-        // Combine all sources using weighted sum instead of modulo to avoid clustering
-        let combined_offset = (primary_offset + secondary_offset / 2 + tertiary_offset / 3 + counter_offset + time_jitter / 4) / 3;
-
-        // Apply to base range with expansion
-        let expanded_max = max_ms + (base_range * 3 / 2); // Expand range by 150%
-        let timeout_ms = min_ms + (combined_offset % (expanded_max - min_ms));
-
-        // Ensure minimum separation to prevent too-close timeouts
-        let min_separation = base_range / 10; // At least 10% of base range separation
-        let final_timeout = timeout_ms.max(min_ms + min_separation);
-
-        Duration::from_millis(final_timeout)
+        Duration::from_millis(timeout_ms)
     }
 
     /// Signal the event loop to shutdown
