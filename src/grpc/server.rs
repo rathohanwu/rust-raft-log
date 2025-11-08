@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 use tonic::{transport::Server, Request, Response, Status};
+use log::info;
 
 use super::client::RaftGrpcClient;
 use super::event_loop::RaftEventLoop;
@@ -9,6 +10,7 @@ use super::proto::{
     raft_service_server::{RaftService, RaftServiceServer},
 };
 use crate::log::{models::ClusterConfig, RaftNode};
+use crate::ServerState;
 
 /// gRPC service implementation that wraps RaftNode
 pub struct RaftGrpcService {
@@ -57,8 +59,6 @@ impl RaftService for RaftGrpcService {
     ) -> Result<Response<proto::AppendEntriesResponse>, Status> {
         let req = request.into_inner();
         let rust_request: crate::log::raft_rpc::AppendEntriesRequest = req.into();
-
-        // Use spawn_blocking to handle the synchronous RaftNode method
         let raft_node = Arc::clone(&self.raft_node);
         let event_loop = self.event_loop.clone();
 
@@ -97,7 +97,7 @@ impl RaftService for RaftGrpcService {
                     .map_err(|_| Status::internal("Failed to acquire lock on RaftNode"))?;
 
                 // Check if this node is the leader
-                if node.get_server_state() != crate::log::models::ServerState::Leader {
+                if node.get_server_state() != ServerState::Leader {
                     // Not the leader - return error with leader hint if we know it
                     let leader_id = node.get_current_leader().unwrap_or(0);
                     let error_message = if leader_id != 0 {
@@ -180,7 +180,7 @@ impl RaftGrpcServer {
         );
         let svc = RaftServiceServer::new(service);
 
-        println!("Starting Raft gRPC server on {}", addr);
+        info!("Starting Raft gRPC server on {}", addr);
 
         // Start event loop in background FIRST
         let event_loop_handle = {
@@ -224,7 +224,7 @@ impl RaftGrpcServer {
         );
         let svc = RaftServiceServer::new(service);
 
-        println!("Starting Raft gRPC server on {}", addr);
+        info!("Starting Raft gRPC server on {}", addr);
 
         // Start event loop in background
         let event_loop_handle = {

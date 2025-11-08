@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::{interval, sleep, Instant};
+use log::{info, debug, warn};
 
 use super::client::RaftGrpcClient;
 use crate::log::{models::ClusterConfig, RaftNode, RequestVoteRequest};
@@ -59,7 +60,7 @@ impl RaftEventLoop {
 
     /// Start the event loop (runs indefinitely until shutdown)
     pub async fn run(&self) {
-        println!("🔄 Starting Raft event loop...");
+        info!("🔄 Starting Raft event loop...");
 
         let election_timeout = self.generate_election_timeout();
         let mut heartbeat_interval =
@@ -68,7 +69,7 @@ impl RaftEventLoop {
         loop {
             // Check for shutdown signal
             if *self.shutdown_signal.lock().unwrap() {
-                println!("🛑 Raft event loop shutting down...");
+                info!("🛑 Raft event loop shutting down...");
                 break;
             }
 
@@ -114,7 +115,7 @@ impl RaftEventLoop {
             node.get_node_id()
         };
 
-        println!(
+        info!(
             "📢 Node {} starting election with provided vote request...",
             node_id
         );
@@ -129,7 +130,7 @@ impl RaftEventLoop {
                 .collect::<Vec<_>>()
         };
 
-        println!(
+        debug!(
             "📤 Broadcasting vote request to {} nodes...",
             other_nodes.len()
         );
@@ -144,7 +145,7 @@ impl RaftEventLoop {
 
             match response {
                 Ok(vote_response) => {
-                    println!(
+                    debug!(
                         "📥 Vote response from Node {}: granted={}, term={}",
                         target_node_id, vote_response.vote_granted, vote_response.term
                     );
@@ -156,14 +157,15 @@ impl RaftEventLoop {
                     };
 
                     if won_election {
-                        println!("👑 Won election! Becoming leader...");
+                        // The become_leader() method will log the leadership transition
+                        // so we don't need to duplicate the logging here
                         let mut node = self.raft_node.lock().unwrap();
                         node.become_leader();
                         break; // Stop sending more requests
                     }
                 }
                 Err(e) => {
-                    println!("❌ Failed to get vote from Node {}: {}", target_node_id, e);
+                    warn!("❌ Failed to get vote from Node {}: {}", target_node_id, e);
                 }
             }
         }
@@ -181,7 +183,7 @@ impl RaftEventLoop {
             return;
         }
 
-        println!("💓 Sending {} heartbeats...", heartbeat_requests.len());
+        debug!("💓 Sending {} heartbeats...", heartbeat_requests.len());
 
         // Store original requests for response handling
         let original_requests: std::collections::HashMap<_, _> =
@@ -207,7 +209,7 @@ impl RaftEventLoop {
                         );
 
                         if !still_leader {
-                            println!(
+                            info!(
                                 "📉 Stepped down from leader due to higher term from Node {}",
                                 node_id
                             );
@@ -215,14 +217,14 @@ impl RaftEventLoop {
                         }
 
                         if response_success {
-                            println!("✅ Heartbeat to Node {} successful", node_id);
+                            debug!("✅ Heartbeat to Node {} successful", node_id);
                         } else {
-                            println!("⚠️ Heartbeat to Node {} failed (term conflict)", node_id);
+                            warn!("⚠️ Heartbeat to Node {} failed (term conflict)", node_id);
                         }
                     }
                 }
                 Err(e) => {
-                    println!("❌ Heartbeat to Node {} failed: {}", node_id, e);
+                    warn!("❌ Heartbeat to Node {} failed: {}", node_id, e);
                 }
             }
         }
@@ -265,7 +267,7 @@ impl RaftEventLoop {
     pub fn reset_election_timeout(&self) {
         let mut last_heartbeat = self.last_heartbeat.lock().unwrap();
         *last_heartbeat = Instant::now();
-        println!("💓 Heartbeat received - election timeout reset");
+        debug!("💓 Heartbeat received - election timeout reset");
     }
 
     /// Get a reference to the gRPC client (only the event loop should send requests)

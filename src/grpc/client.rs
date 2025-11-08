@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Status};
+use log::{error};
 
 use crate::log::models::{NodeId, NodeInfo, ClusterConfig};
 use crate::log::raft_rpc::{
@@ -136,7 +137,7 @@ impl RaftGrpcClient {
                 Ok(result) => results.push(result),
                 Err(e) => {
                     // Handle join error - this shouldn't normally happen
-                    eprintln!("Task join error: {}", e);
+                    error!("Task join error: {}", e);
                 }
             }
         }
@@ -170,7 +171,7 @@ impl RaftGrpcClient {
             match handle.await {
                 Ok(result) => results.push(result),
                 Err(e) => {
-                    eprintln!("Task join error: {}", e);
+                    error!("Task join error: {}", e);
                 }
             }
         }

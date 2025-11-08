@@ -631,6 +631,96 @@ Test the cluster behavior:
 # Verify the node rejoins the cluster
 ```
 
+## 📊 Logging and Observability
+
+The project uses structured logging with the `log` and `env_logger` crates for comprehensive observability.
+
+### Log Levels and Configuration
+
+```bash
+# Set log level for all components
+export RUST_LOG=info
+
+# Set different levels for different modules
+export RUST_LOG=raft_log=debug,raft_client=info
+
+# Run with specific log level
+RUST_LOG=debug cargo run --bin rust-raft-log -- --config cluster_config.yaml --node-id 1
+```
+
+### Log Output Format
+```
+[2025-11-07T15:51:26Z INFO  raft_client] 🚀 Starting Raft client...
+[2025-11-07T15:51:26Z INFO  raft_client] 📋 Loaded cluster configuration with 3 nodes
+[2025-11-07T15:51:26Z WARN  raft_client] ❌ Failed to connect to node 1: transport error
+```
+
+### Key Log Categories
+- **ERROR**: Critical failures and system errors
+- **WARN**: Warnings, connection failures, and recoverable issues
+- **INFO**: General operational information, cluster events
+- **DEBUG**: Detailed debugging information, request/response details
+
+### Monitoring Key Events
+- **Cluster Management**: Node startup, configuration loading
+- **Leader Election**: Election timeouts, vote requests/responses
+- **Log Replication**: Entry appending, heartbeats, synchronization
+- **Client Operations**: Request handling, leader discovery
+- **Performance**: Request latencies, throughput metrics
+
+## 🧪 Performance Testing Framework
+
+The project includes a comprehensive performance testing framework for validating system behavior under various loads.
+
+### Quick Performance Testing
+
+```bash
+# Run all performance tests
+./run_performance_tests.sh all
+
+# Run specific test scenarios
+./run_performance_tests.sh basic      # Basic load test (50 requests, 32B)
+./run_performance_tests.sh throughput # High throughput (200 requests, 64B)
+./run_performance_tests.sh large      # Large payload (30 requests, 1KB)
+./run_performance_tests.sh stress     # Stress test (500 requests, 128B)
+
+# Run unit tests only
+./run_performance_tests.sh unit
+```
+
+### Performance Test Features
+- **🚀 Automated cluster management** - Start/stop clusters automatically
+- **📊 Multiple test scenarios** - Basic, throughput, large payload, stress tests
+- **📈 Comprehensive metrics** - Latency percentiles, throughput, success rates
+- **🔄 Intelligent retry logic** - Leader discovery and failover handling
+- **⚙️ CI/CD integration** - Suitable for automated testing pipelines
+
+### Sample Performance Output
+```
+📊 Performance Test Results
+============================
+Total requests: 200
+Successful requests: 195
+Success rate: 97.50%
+Average latency: 76.17ms
+Throughput: 12.80 ops/sec
+Latency percentiles:
+  P50: 67.23ms
+  P95: 156.78ms
+  P99: 201.34ms
+```
+
+### Performance Test Configuration
+```bash
+# Run with debug logging
+RUST_LOG=debug ./run_performance_tests.sh basic
+
+# Direct binary execution
+RUST_LOG=info cargo run --bin performance_test -- throughput
+```
+
+For detailed performance testing documentation, see [PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md).
+
 ### Monitoring
 
 Each node outputs detailed status information:
