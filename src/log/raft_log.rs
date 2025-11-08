@@ -598,9 +598,6 @@ mod tests {
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
 
         let initial_segments = raft_log.segment_count();
-        println!("Initial segments: {}", initial_segments);
-        println!("Log directory: {:?}", raft_log.config.log_directory);
-
         let total_entry_count = 2000;
 
         for i in 1..=total_entry_count {
@@ -613,7 +610,6 @@ mod tests {
 
         // Should have created additional segments
         let final_segments = raft_log.segment_count();
-        println!("Final segments: {}", final_segments);
         assert!(
             final_segments > initial_segments,
             "Expected segment rotation to occur"
@@ -630,11 +626,6 @@ mod tests {
             .expect("Failed to get entries 40-50");
         assert_eq!(entries_40_to_50.len(), 11);
 
-        // Verify entries span multiple segments
-        println!(
-            "Successfully verified {} entries across {} segments",
-            50, final_segments
-        );
     }
 
     #[test]
@@ -801,9 +792,6 @@ mod tests {
         let (config, _temp_dir) = create_test_config();
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
 
-        println!("=== Comprehensive Cross-Segment Test ===");
-        println!("Log directory: {:?}", raft_log.config.log_directory);
-
         // Phase 1: Fill multiple segments with different terms and payloads
         let mut entry_count = 0;
         for term in 1..=5 {
@@ -820,26 +808,14 @@ mod tests {
                     .append_entry(entry)
                     .expect("Failed to append entry");
 
-                if entry_count % 25 == 0 {
-                    println!(
-                        "Added {} entries, segments: {}",
-                        entry_count,
-                        raft_log.segment_count()
-                    );
-                }
             }
         }
 
         let total_entries = entry_count;
         let total_segments = raft_log.segment_count();
-        println!(
-            "Total entries: {}, Total segments: {}",
-            total_entries, total_segments
-        );
         assert!(total_segments > 1, "Should have multiple segments");
 
         // Phase 2: Test individual entry retrieval across all segments
-        println!("Testing individual entry retrieval...");
         for i in 1..=total_entries {
             let entry = raft_log
                 .get_entry(i)
@@ -856,7 +832,6 @@ mod tests {
         }
 
         // Phase 3: Test range queries that span multiple segments
-        println!("Testing cross-segment range queries...");
 
         // Query spanning first two segments
         let early_entries = raft_log
@@ -890,7 +865,6 @@ mod tests {
         assert_eq!(last_entry.term, 5); // Should be from term 5
 
         // Phase 5: Test truncation across segments
-        println!("Testing truncation across segments...");
         let truncate_point = total_entries - 25; // Remove last 25 entries
         let truncated = raft_log
             .truncate_from(truncate_point + 1)
@@ -903,7 +877,6 @@ mod tests {
         assert!(raft_log.get_entry(truncate_point + 1).is_none());
 
         // Phase 6: Add new entries after truncation
-        println!("Testing append after truncation...");
         for i in 1..=10 {
             let payload = format!("Post-truncation entry {} - {}", i, "y".repeat(40));
             let entry = create_test_entry(6, &payload); // New term
@@ -927,12 +900,6 @@ mod tests {
         assert_eq!(last_new_entry.term, 6);
         assert!(last_new_entry.payload.starts_with(b"Post-truncation"));
 
-        println!("=== Cross-segment test completed successfully ===");
-        println!(
-            "Final state: {} entries across {} segments",
-            raft_log.len(),
-            raft_log.segment_count()
-        );
     }
 
     #[test]
@@ -959,11 +926,6 @@ mod tests {
         let config = create_inspectable_test_config("example");
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
 
-        println!(
-            "Files will be created in: {:?}",
-            raft_log.config.log_directory
-        );
-
         // Add some entries
         for i in 1..=3 {
             let entry = create_test_entry(1, &format!("inspectable entry {}", i));
@@ -973,7 +935,6 @@ mod tests {
         }
 
         assert_eq!(raft_log.len(), 3);
-        println!("Check ./raft_logs/ directory to inspect the segment files");
         // Files remain in ./raft_logs/ for inspection
     }
 
@@ -998,17 +959,14 @@ mod tests {
         // Now entries exist - clean Option API
         if let Some(entry) = raft_log.get_entry(3) {
             assert_eq!(entry.index, 3);
-            println!("Found entry 3: {:?}", String::from_utf8(entry.payload).unwrap());
         }
 
         if let Some(last_entry) = raft_log.get_last_log_entry() {
             assert_eq!(last_entry.index, 5);
-            println!("Last entry: {:?}", String::from_utf8(last_entry.payload).unwrap());
         }
 
         if let Some(entries) = raft_log.get_entries(2, 4) {
             assert_eq!(entries.len(), 3);
-            println!("Retrieved {} entries from range 2-4", entries.len());
         }
 
         // Invalid requests return None (no exceptions!)
@@ -1146,11 +1104,6 @@ mod tests {
         assert_eq!(reloaded_snapshot.commit_index, 3);
         assert_eq!(reloaded_snapshot.last_applied, 2);
 
-        println!("✅ RaftLog and RaftState integration test completed successfully!");
-        println!("   - Final term: {}", reloaded_snapshot.current_term);
-        println!("   - Server state: {:?}", reloaded_snapshot.server_state);
-        println!("   - Log entries: {}", raft_log.len());
-        println!("   - Commit index: {}", reloaded_snapshot.commit_index);
     }
 
     #[test]
@@ -1204,14 +1157,6 @@ mod tests {
         assert_eq!(raft_state.get_current_term(), 1);
         assert_eq!(raft_state.get_server_state(), ServerState::Leader);
 
-        println!("✅ ClusterConfig integration test completed successfully!");
-        println!("   - Node ID: {}", cluster_config.node_id);
-        println!("   - This node address: {}", cluster_config.get_address());
-        println!("   - Cluster size: {}", cluster_config.cluster_size());
-        println!("   - Majority size: {}", cluster_config.majority_size());
-        println!("   - Other nodes: {:?}", other_nodes.iter().map(|n| n.get_address()).collect::<Vec<_>>());
-        println!("   - Log directory: {}", cluster_config.log_directory);
-        println!("   - Meta file: {}", cluster_config.meta_file_path);
     }
 
     #[test]
@@ -1263,19 +1208,5 @@ mod tests {
         assert_eq!(single_node_config.majority_size(), 1);
         assert_eq!(single_node_config.get_other_nodes().len(), 0);
 
-        println!("✅ Multi-node cluster config test completed successfully!");
-        println!("   - Node 1: {} (others: {})",
-                 node1_config.get_address(),
-                 node1_others.len());
-        println!("   - Node 2: {} (others: {})",
-                 node2_config.get_address(),
-                 node2_others.len());
-        let node3_others = node3_config.get_other_nodes();
-        println!("   - Node 3: {} (others: {})",
-                 node3_config.get_address(),
-                 node3_others.len());
-        println!("   - Cluster size: {}, Majority: {}",
-                 node1_config.cluster_size(),
-                 node1_config.majority_size());
     }
 }

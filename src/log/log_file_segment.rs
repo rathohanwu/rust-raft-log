@@ -7,6 +7,7 @@ use crate::log::mmap_utils::MemoryMapUtil;
 use byteorder::{LittleEndian, ReadBytesExt};
 use memmap2::MmapMut;
 use std::io::Cursor;
+use log::error;
 
 /// Header for a log segment file.
 ///
@@ -172,7 +173,7 @@ impl LogFileSegment {
             let pay_load = cursor.read_u64::<LittleEndian>();
             match pay_load {
                 Err(e) => {
-                    eprintln!("Error reading payload size at index {}: {}", _i, e);
+                    error!("Error reading payload size at index {}: {}", _i, e);
                     panic!("Error reading payload size at index {}: {}", _i, e);
                 }
                 Ok(entry_size) => {

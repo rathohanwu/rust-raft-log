@@ -3,6 +3,7 @@ use memmap2::MmapMut;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::{Error, Write};
+use log::error;
 
 pub fn create_memory_mapped_file(file_path: &str, size: u64) -> Result<MmapMut, Error> {
     let file = OpenOptions::new()
@@ -21,7 +22,7 @@ pub fn write_u64(buffer: &mut MmapMut, offset: u64, value: u64) -> bool {
     let result = cursor.write_all(&value.to_le_bytes());
     match result {
         Err(e) => {
-            eprintln!("Error writing u64 at offset {}: {}", offset, e);
+            error!("Error writing u64 at offset {}: {}", offset, e);
             false
         }
         Ok(_) => true,
@@ -34,7 +35,7 @@ pub fn read_u64(buffer: &MmapMut, offset: u64) -> Option<u64> {
     let result = cursor.read_u64::<LittleEndian>();
     match result {
         Err(e) => {
-            eprintln!("Error reading u64 at offset {}: {}", offset, e);
+            error!("Error reading u64 at offset {}: {}", offset, e);
             None
         }
         Ok(value) => Some(value),

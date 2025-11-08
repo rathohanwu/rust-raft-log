@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::process;
+use log::{info, error};
 
 use raft_log::{RaftGrpcServer, RaftNode, YamlClusterConfig};
 
@@ -19,10 +20,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    env_logger::init();
+
     // Parse command line arguments
     let args = Args::parse();
 
-    println!(
+    info!(
         "🚀 Starting Raft node {} with config: {}",
         args.node_id, args.config
     );
@@ -31,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let yaml_config = match YamlClusterConfig::from_file(&args.config) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!(
+            error!(
                 "❌ Failed to load configuration from {}: {}",
                 args.config, e
             );
@@ -43,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cluster_config = match yaml_config.to_cluster_config(args.node_id) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!(
+            error!(
                 "❌ Failed to create cluster config for node {}: {}",
                 args.node_id, e
             );
@@ -51,35 +55,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    println!("📋 Cluster configuration:");
-    println!("   Node ID: {}", cluster_config.node_id);
-    println!("   Address: {}", cluster_config.get_address());
-    println!("   Cluster size: {}", cluster_config.cluster_size());
-    println!("   Log directory: {}", cluster_config.log_directory);
+    info!("📋 Cluster configuration:");
+    info!("   Node ID: {}", cluster_config.node_id);
+    info!("   Address: {}", cluster_config.get_address());
+    info!("   Cluster size: {}", cluster_config.cluster_size());
+    info!("   Log directory: {}", cluster_config.log_directory);
 
     // Create the Raft node
     let raft_node = match RaftNode::new(cluster_config.clone()) {
         Ok(node) => node,
         Err(e) => {
-            eprintln!("❌ Failed to create Raft node: {}", e);
+            error!("❌ Failed to create Raft node: {}", e);
             process::exit(1);
         }
     };
 
-    println!("✅ Raft node created successfully");
+    info!("✅ Raft node created successfully");
 
     // Create and start the gRPC server
     let server = RaftGrpcServer::new(raft_node);
 
-    println!(
+    info!(
         "🌐 Starting gRPC server on {}",
         cluster_config.get_address()
     );
 
     match server.start().await {
-        Ok(_) => println!("✅ Server started successfully"),
+        Ok(_) => info!("✅ Server started successfully"),
         Err(e) => {
-            eprintln!("❌ Failed to start server: {}", e);
+            error!("❌ Failed to start server: {}", e);
             process::exit(1);
         }
     }
