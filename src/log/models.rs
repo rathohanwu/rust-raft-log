@@ -393,28 +393,14 @@ impl ClusterConfig {
 }
 
 /// Server state in Raft consensus
+///
+/// Note: This is completely volatile state that is never persisted to disk.
+/// Servers always start as Follower on startup/restart.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ServerState {
-    Follower = 0,
-    Candidate = 1,
-    Leader = 2,
-}
-
-impl From<u8> for ServerState {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => ServerState::Follower,
-            1 => ServerState::Candidate,
-            2 => ServerState::Leader,
-            _ => ServerState::Follower, // Default to Follower for unknown values
-        }
-    }
-}
-
-impl From<ServerState> for u8 {
-    fn from(state: ServerState) -> Self {
-        state as u8
-    }
+    Follower,
+    Candidate,
+    Leader,
 }
 
 /// Errors that can occur during RaftLog operations
