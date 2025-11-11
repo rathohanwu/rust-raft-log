@@ -1,9 +1,9 @@
-use super::models::{ClusterConfig, EntryType, LogEntry, NodeId, NodeInfo, ServerState};
-use super::raft_log::RaftLog;
-use super::raft_rpc::{
-    AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse,
+use crate::models::{
+    ClusterConfig, EntryType, LogEntry, NodeId, NodeInfo, ServerState,
+    RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse,
 };
-use super::raft_state::{RaftState, RaftStateSnapshot};
+use crate::storage::RaftLog;
+use super::state::{RaftState, RaftStateSnapshot};
 use log::{debug, info};
 use std::collections::{HashMap, HashSet};
 

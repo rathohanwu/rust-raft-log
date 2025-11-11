@@ -1,12 +1,10 @@
 pub mod server;
+pub mod service;
 pub mod client;
-pub mod conversion;
 pub mod event_loop;
 
-// Re-export the generated protobuf code
-pub mod proto {
-    tonic::include_proto!("raft");
-}
+// Re-export the protobuf types for backward compatibility
+pub use crate::models::types_proto::proto;
 
 pub use server::RaftGrpcServer;
 pub use client::RaftGrpcClient;

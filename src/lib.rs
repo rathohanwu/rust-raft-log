@@ -1,12 +1,20 @@
-pub mod log;
+pub mod models;
+pub mod consensus;
+pub mod storage;
 pub mod grpc;
 
-pub use log::{
-    models::{LogEntry, RaftLogConfig, RaftLogError, EntryType, NodeId, ServerState, RaftStateError, ClusterConfig, NodeInfo, YamlClusterConfig},
-    raft_log::RaftLog,
-    raft_node::RaftNode,
-    raft_rpc::{RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse},
-    raft_state::{RaftState, RaftStateSnapshot},
+// Re-export commonly used types for convenience
+pub use models::{
+    LogEntry, RaftLogConfig, RaftLogError, EntryType, NodeId,
+    ServerState, RaftStateError, ClusterConfig, NodeInfo,
+    YamlClusterConfig, RequestVoteRequest, RequestVoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse
 };
+
+pub use consensus::{
+    RaftNode, RaftState, RaftStateSnapshot
+};
+
+pub use storage::{RaftLog, LogFileSegment};
 
 pub use grpc::{RaftGrpcServer, RaftGrpcClient, RaftEventLoop};
