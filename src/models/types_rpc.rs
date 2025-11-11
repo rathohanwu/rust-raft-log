@@ -1,4 +1,4 @@
-use super::models::{NodeId, LogEntry, EntryType};
+use crate::models::{NodeId, LogEntry, EntryType};
 
 /// RequestVote RPC - Invoked by candidates to gather votes
 #[derive(Debug, Clone, PartialEq)]

@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::time::{interval, sleep, Instant};
 
 use super::client::RaftGrpcClient;
-use crate::log::{models::ClusterConfig, RaftNode, RequestVoteRequest};
+use crate::{models::{ClusterConfig, RequestVoteRequest}, consensus::RaftNode};
 use crate::ServerState::*;
 
 /// Configuration for Raft timing parameters

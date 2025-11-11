@@ -1,9 +1,9 @@
-use super::models::{AppendResult, LogEntry, EntryType};
+use crate::models::{AppendResult, LogEntry, EntryType};
 use super::utils::{
     BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET, HEADER_SIZE, MAGIC_OFFSET, START_APPEND_POSITION_OFFSET,
     VERSION_OFFSET,
 };
-use crate::log::mmap_utils::MemoryMapUtil;
+use super::mmap_utils::MemoryMapUtil;
 use byteorder::{LittleEndian, ReadBytesExt};
 use memmap2::MmapMut;
 use std::io::Cursor;
@@ -189,7 +189,7 @@ impl LogFileSegment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log::utils::create_memory_mapped_file;
+    use crate::storage::utils::create_memory_mapped_file;
 
     #[test]
     fn should_return_rotated_needed_result() {

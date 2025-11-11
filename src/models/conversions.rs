@@ -1,14 +1,16 @@
-use crate::log::models::{LogEntry, EntryType, NodeId};
-use crate::log::raft_rpc::{
-    RequestVoteRequest, RequestVoteResponse, 
-    AppendEntriesRequest, AppendEntriesResponse
+use super::types_proto::{
+    ProtoAppendEntriesRequest, ProtoAppendEntriesResponse, ProtoLogEntry, ProtoRequestVoteRequest,
+    ProtoRequestVoteResponse,
 };
-use super::proto;
+use super::{
+    AppendEntriesRequest, AppendEntriesResponse, EntryType, LogEntry, RequestVoteRequest,
+    RequestVoteResponse,
+};
 
 /// Convert from Rust RequestVoteRequest to protobuf
-impl From<RequestVoteRequest> for proto::RequestVoteRequest {
+impl From<RequestVoteRequest> for ProtoRequestVoteRequest {
     fn from(req: RequestVoteRequest) -> Self {
-        proto::RequestVoteRequest {
+        ProtoRequestVoteRequest {
             term: req.term,
             candidate_id: req.candidate_id,
             last_log_index: req.last_log_index,
@@ -18,8 +20,8 @@ impl From<RequestVoteRequest> for proto::RequestVoteRequest {
 }
 
 /// Convert from protobuf RequestVoteRequest to Rust
-impl From<proto::RequestVoteRequest> for RequestVoteRequest {
-    fn from(req: proto::RequestVoteRequest) -> Self {
+impl From<ProtoRequestVoteRequest> for RequestVoteRequest {
+    fn from(req: ProtoRequestVoteRequest) -> Self {
         RequestVoteRequest {
             term: req.term,
             candidate_id: req.candidate_id,
@@ -30,9 +32,9 @@ impl From<proto::RequestVoteRequest> for RequestVoteRequest {
 }
 
 /// Convert from Rust RequestVoteResponse to protobuf
-impl From<RequestVoteResponse> for proto::RequestVoteResponse {
+impl From<RequestVoteResponse> for ProtoRequestVoteResponse {
     fn from(resp: RequestVoteResponse) -> Self {
-        proto::RequestVoteResponse {
+        ProtoRequestVoteResponse {
             term: resp.term,
             vote_granted: resp.vote_granted,
         }
@@ -40,8 +42,8 @@ impl From<RequestVoteResponse> for proto::RequestVoteResponse {
 }
 
 /// Convert from protobuf RequestVoteResponse to Rust
-impl From<proto::RequestVoteResponse> for RequestVoteResponse {
-    fn from(resp: proto::RequestVoteResponse) -> Self {
+impl From<ProtoRequestVoteResponse> for RequestVoteResponse {
+    fn from(resp: ProtoRequestVoteResponse) -> Self {
         RequestVoteResponse {
             term: resp.term,
             vote_granted: resp.vote_granted,
@@ -50,9 +52,9 @@ impl From<proto::RequestVoteResponse> for RequestVoteResponse {
 }
 
 /// Convert from Rust LogEntry to protobuf
-impl From<LogEntry> for proto::LogEntry {
+impl From<LogEntry> for ProtoLogEntry {
     fn from(entry: LogEntry) -> Self {
-        proto::LogEntry {
+        ProtoLogEntry {
             term: entry.term(),
             index: entry.index(),
             entry_type: entry.entry_type().clone() as u32,
@@ -62,27 +64,22 @@ impl From<LogEntry> for proto::LogEntry {
 }
 
 /// Convert from protobuf LogEntry to Rust
-impl From<proto::LogEntry> for LogEntry {
-    fn from(entry: proto::LogEntry) -> Self {
+impl From<ProtoLogEntry> for LogEntry {
+    fn from(entry: ProtoLogEntry) -> Self {
         let entry_type = match entry.entry_type {
             0 => EntryType::Normal,
             1 => EntryType::NoOp,
             _ => EntryType::Normal, // Default to Normal for unknown values
         };
-        
-        LogEntry::new_with_type(
-            entry.term,
-            entry.index,
-            entry_type,
-            entry.payload,
-        )
+
+        LogEntry::new_with_type(entry.term, entry.index, entry_type, entry.payload)
     }
 }
 
 /// Convert from Rust AppendEntriesRequest to protobuf
-impl From<AppendEntriesRequest> for proto::AppendEntriesRequest {
+impl From<AppendEntriesRequest> for ProtoAppendEntriesRequest {
     fn from(req: AppendEntriesRequest) -> Self {
-        proto::AppendEntriesRequest {
+        ProtoAppendEntriesRequest {
             term: req.term,
             leader_id: req.leader_id,
             prev_log_index: req.prev_log_index,
@@ -94,8 +91,8 @@ impl From<AppendEntriesRequest> for proto::AppendEntriesRequest {
 }
 
 /// Convert from protobuf AppendEntriesRequest to Rust
-impl From<proto::AppendEntriesRequest> for AppendEntriesRequest {
-    fn from(req: proto::AppendEntriesRequest) -> Self {
+impl From<ProtoAppendEntriesRequest> for AppendEntriesRequest {
+    fn from(req: ProtoAppendEntriesRequest) -> Self {
         AppendEntriesRequest {
             term: req.term,
             leader_id: req.leader_id,
@@ -108,9 +105,9 @@ impl From<proto::AppendEntriesRequest> for AppendEntriesRequest {
 }
 
 /// Convert from Rust AppendEntriesResponse to protobuf
-impl From<AppendEntriesResponse> for proto::AppendEntriesResponse {
+impl From<AppendEntriesResponse> for ProtoAppendEntriesResponse {
     fn from(resp: AppendEntriesResponse) -> Self {
-        proto::AppendEntriesResponse {
+        ProtoAppendEntriesResponse {
             term: resp.term,
             success: resp.success,
             last_log_index: resp.last_log_index,
@@ -119,8 +116,8 @@ impl From<AppendEntriesResponse> for proto::AppendEntriesResponse {
 }
 
 /// Convert from protobuf AppendEntriesResponse to Rust
-impl From<proto::AppendEntriesResponse> for AppendEntriesResponse {
-    fn from(resp: proto::AppendEntriesResponse) -> Self {
+impl From<ProtoAppendEntriesResponse> for AppendEntriesResponse {
+    fn from(resp: ProtoAppendEntriesResponse) -> Self {
         AppendEntriesResponse {
             term: resp.term,
             success: resp.success,

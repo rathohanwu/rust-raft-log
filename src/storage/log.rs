@@ -1,6 +1,5 @@
-use super::log_file_segment::LogFileSegment;
-use super::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType, ServerState, NodeId, ClusterConfig, NodeInfo};
-use super::raft_state::{RaftState, RaftStateSnapshot};
+use super::segment::LogFileSegment;
+use crate::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType, ServerState, NodeId, ClusterConfig, NodeInfo};
 use super::utils::create_memory_mapped_file;
 use std::collections::BTreeMap;
 use std::fs;
@@ -367,6 +366,7 @@ impl RaftLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::RaftState;
     use tempfile::TempDir;
 
     /// Creates a test config using a temporary directory that gets cleaned up automatically.

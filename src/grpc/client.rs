@@ -5,13 +5,17 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Status};
 use log::{error};
 
-use crate::log::models::{NodeId, NodeInfo, ClusterConfig};
-use crate::log::raft_rpc::{
+use crate::models::{
+    NodeId, NodeInfo, ClusterConfig,
     RequestVoteRequest, RequestVoteResponse,
     AppendEntriesRequest, AppendEntriesResponse
 };
-use super::proto::{self, raft_service_client::RaftServiceClient};
-use super::conversion::*;
+use super::proto::raft_service_client::RaftServiceClient;
+use crate::models::types_proto::{
+    ProtoRequestVoteRequest, ProtoAppendEntriesRequest,
+    ClientRequestMessage, ClientResponseMessage,
+};
+use crate::models::conversions::*;
 
 /// gRPC client with persistent connection management for Raft RPCs
 #[derive(Clone)]
@@ -70,7 +74,7 @@ impl RaftGrpcClient {
     ) -> Result<RequestVoteResponse, Status> {
         let mut client = self.get_connection(node_id).await?;
         
-        let proto_request: proto::RequestVoteRequest = request.into();
+        let proto_request: ProtoRequestVoteRequest = request.into();
         let response = client.request_vote(Request::new(proto_request)).await?;
         
         let rust_response: RequestVoteResponse = response.into_inner().into();
@@ -85,7 +89,7 @@ impl RaftGrpcClient {
     ) -> Result<AppendEntriesResponse, Status> {
         let mut client = self.get_connection(node_id).await?;
         
-        let proto_request: proto::AppendEntriesRequest = request.into();
+        let proto_request: ProtoAppendEntriesRequest = request.into();
         let response = client.append_entries(Request::new(proto_request)).await?;
         
         let rust_response: AppendEntriesResponse = response.into_inner().into();
@@ -97,10 +101,10 @@ impl RaftGrpcClient {
         &self,
         node_id: NodeId,
         payload: Vec<u8>,
-    ) -> Result<proto::ClientResponseMessage, Status> {
+    ) -> Result<ClientResponseMessage, Status> {
         let mut client = self.get_connection(node_id).await?;
 
-        let proto_request = proto::ClientRequestMessage { payload };
+        let proto_request = ClientRequestMessage { payload };
         let response = client.client_request(Request::new(proto_request)).await?;
 
         Ok(response.into_inner())
