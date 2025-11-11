@@ -4,8 +4,8 @@ use super::raft_rpc::{
     AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse,
 };
 use super::raft_state::{RaftState, RaftStateSnapshot};
-use std::collections::{HashMap, HashSet};
 use log::{debug, info};
+use std::collections::{HashMap, HashSet};
 
 /// Core Raft node that implements the Raft consensus algorithm
 pub struct RaftNode {
@@ -131,18 +131,24 @@ impl RaftNode {
         if candidate_log_up_to_date {
             // Try to vote for candidate
             if self.state.vote_for_candidate(request.candidate_id) {
-                debug!("✅ Node {} granted vote to Node {} for term {}",
-                       self.config.node_id, request.candidate_id, current_term);
+                debug!(
+                    "✅ Node {} granted vote to Node {} for term {}",
+                    self.config.node_id, request.candidate_id, current_term
+                );
                 RequestVoteResponse::grant_vote(current_term)
             } else {
-                debug!("❌ Node {} denied vote to Node {} for term {} (already voted)",
-                       self.config.node_id, request.candidate_id, current_term);
+                debug!(
+                    "❌ Node {} denied vote to Node {} for term {} (already voted)",
+                    self.config.node_id, request.candidate_id, current_term
+                );
                 RequestVoteResponse::deny_vote(current_term)
             }
         } else {
             // Candidate's log is not up-to-date
-            debug!("❌ Node {} denied vote to Node {} for term {} (log not up-to-date)",
-                   self.config.node_id, request.candidate_id, current_term);
+            debug!(
+                "❌ Node {} denied vote to Node {} for term {} (log not up-to-date)",
+                self.config.node_id, request.candidate_id, current_term
+            );
             RequestVoteResponse::deny_vote(current_term)
         }
     }
@@ -168,8 +174,10 @@ impl RaftNode {
 
             // Log leader change for new term
             if previous_leader != Some(request.leader_id) {
-                info!("🔄 Node {} detected new LEADER: Node {} for term {}",
-                      self.config.node_id, request.leader_id, request.term);
+                info!(
+                    "🔄 Node {} detected new LEADER: Node {} for term {}",
+                    self.config.node_id, request.leader_id, request.term
+                );
             }
             request.term
         } else {
@@ -183,8 +191,10 @@ impl RaftNode {
 
             // Log leader detection if this is the first time we see this leader
             if previous_leader != Some(request.leader_id) {
-                info!("🔄 Node {} detected LEADER: Node {} for term {}",
-                      self.config.node_id, request.leader_id, current_term);
+                info!(
+                    "🔄 Node {} detected LEADER: Node {} for term {}",
+                    self.config.node_id, request.leader_id, current_term
+                );
             }
             current_term
         };
@@ -265,8 +275,10 @@ impl RaftNode {
         }
 
         // Log election start
-        info!("🗳️  Node {} starting election for term {} (candidate)",
-              self.config.node_id, new_term);
+        info!(
+            "🗳️  Node {} starting election for term {} (candidate)",
+            self.config.node_id, new_term
+        );
         self.votes_received.insert(self.config.node_id);
 
         // Create a single RequestVote request (identical for all other nodes)
@@ -301,21 +313,32 @@ impl RaftNode {
         if response.vote_granted {
             self.votes_received.insert(from_node);
 
-            debug!("✅ Node {} received vote from Node {} (votes: {}/{})",
-                   self.config.node_id, from_node, self.votes_received.len(), self.config.majority_size());
+            debug!(
+                "✅ Node {} received vote from Node {} (votes: {}/{})",
+                self.config.node_id,
+                from_node,
+                self.votes_received.len(),
+                self.config.majority_size()
+            );
 
             // Check if we have majority
             let majority_size = self.config.majority_size();
             if self.votes_received.len() >= majority_size {
-                info!("🎉 Node {} won election with {}/{} votes for term {}",
-                      self.config.node_id, self.votes_received.len(), self.config.cluster_size(),
-                      self.current_election_term);
+                info!(
+                    "🎉 Node {} won election with {}/{} votes for term {}",
+                    self.config.node_id,
+                    self.votes_received.len(),
+                    self.config.cluster_size(),
+                    self.current_election_term
+                );
                 self.become_leader();
                 return true;
             }
         } else {
-            debug!("❌ Node {} vote denied by Node {} for term {}",
-                   self.config.node_id, from_node, response.term);
+            debug!(
+                "❌ Node {} vote denied by Node {} for term {}",
+                self.config.node_id, from_node, response.term
+            );
         }
 
         false
@@ -364,7 +387,10 @@ impl RaftNode {
         }
 
         // Log the leadership transition
-        info!("👑 Node {} became LEADER for term {}", node_id, current_term);
+        info!(
+            "👑 Node {} became LEADER for term {}",
+            node_id, current_term
+        );
     }
 
     /// Creates AppendEntries requests for all followers (leader only)
@@ -449,16 +475,13 @@ impl RaftNode {
             return false;
         }
 
-        // If response term is newer, step down
         if response.term > self.state.get_current_term() {
             let old_term = self.state.get_current_term();
             self.state.start_new_term_as_follower(response.term);
             self.next_index.clear();
             self.match_index.clear();
-            // Clear current leader since we're stepping down
             self.current_leader = None;
 
-            // Log stepping down from leader
             info!("📉 Node {} stepped down from LEADER (term {} -> {}) due to higher term from Node {}",
                   self.config.node_id, old_term, response.term, from_node);
             return false;
@@ -814,7 +837,6 @@ mod tests {
         assert_eq!(node1_entry2.payload, "command1".as_bytes());
         assert_eq!(node2_entry2.payload, "command1".as_bytes());
         assert_eq!(node3_entry2.payload, "command1".as_bytes());
-
     }
 
     #[test]
@@ -952,7 +974,6 @@ mod tests {
 
         // Verify follower eventually gets the correct entries
         assert_eq!(follower.get_log_length(), 3); // NoOp + command1 + command2
-
     }
 
     #[test]
@@ -1007,6 +1028,5 @@ mod tests {
         // Test that convenience methods work the same way
         let convenience_requests = leader.create_heartbeats();
         assert_eq!(heartbeat_requests, convenience_requests);
-
     }
 }

@@ -1100,9 +1100,9 @@ mod tests {
         // Verify state persisted correctly
         assert_eq!(reloaded_snapshot.current_term, 2);
         assert_eq!(reloaded_snapshot.voted_for, Some(999));
-        assert_eq!(reloaded_snapshot.server_state, ServerState::Leader);
-        assert_eq!(reloaded_snapshot.commit_index, 3);
-        assert_eq!(reloaded_snapshot.last_applied, 2);
+        assert_eq!(reloaded_snapshot.server_state, ServerState::Follower);
+        assert_eq!(reloaded_snapshot.commit_index, 0);
+        assert_eq!(reloaded_snapshot.last_applied, 0);
 
     }
 

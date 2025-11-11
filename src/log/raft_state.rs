@@ -5,7 +5,8 @@ use memmap2::MmapMut;
 use std::path::Path;
 
 /// Header size for RaftState file (magic + version + data fields)
-const RAFT_STATE_HEADER_SIZE: usize = 40;
+/// Note: Only persistent state is stored - volatile state is kept in memory only
+const RAFT_STATE_HEADER_SIZE: usize = 20;
 
 /// Magic number for RaftState files
 const RAFT_STATE_MAGIC: u32 = 0x52415354; // "RAST" in ASCII
@@ -14,18 +15,25 @@ const RAFT_STATE_MAGIC: u32 = 0x52415354; // "RAST" in ASCII
 const RAFT_STATE_VERSION: u32 = 1;
 
 /// RaftState manages persistent Raft consensus state using memory-mapped files
-/// 
-/// File format:
+///
+/// Persistent state (stored on disk):
 /// - Magic number (4 bytes): 0x52415354 ("RAST")
 /// - Version (4 bytes): File format version
 /// - Current term (8 bytes): Current Raft term
 /// - Voted for (4 bytes): NodeId of candidate voted for (0 = None)
-/// - Commit index (8 bytes): Index of highest log entry known to be committed
-/// - Last applied (8 bytes): Index of highest log entry applied to state machine
-/// - Server state (1 byte): Current server state (Follower/Candidate/Leader)
-/// - Reserved (3 bytes): For future use and alignment
+///
+/// Volatile state (in-memory only, resets on restart):
+/// - Server state: Always starts as Follower
+/// - Commit index: Always starts at 0
+/// - Last applied: Always starts at 0
 pub struct RaftState {
     buffer: MmapMut,
+    /// Volatile server state - always starts as Follower, never persisted
+    server_state: ServerState,
+    /// Volatile commit index - always starts at 0, never persisted
+    commit_index: u64,
+    /// Volatile last applied index - always starts at 0, never persisted
+    last_applied: u64,
 }
 
 impl RaftState {
@@ -41,7 +49,12 @@ impl RaftState {
         )
         .map_err(|e| RaftStateError::StateFileError(format!("Failed to create state file: {}", e)))?;
 
-        let mut raft_state = RaftState { buffer };
+        let mut raft_state = RaftState {
+            buffer,
+            server_state: ServerState::Follower, // Always start as Follower
+            commit_index: 0, // Always start at 0
+            last_applied: 0, // Always start at 0
+        };
         raft_state.initialize_new_state();
         Ok(raft_state)
     }
@@ -58,7 +71,12 @@ impl RaftState {
         )
         .map_err(|e| RaftStateError::StateFileError(format!("Failed to open state file: {}", e)))?;
 
-        let raft_state = RaftState { buffer };
+        let raft_state = RaftState {
+            buffer,
+            server_state: ServerState::Follower, // Always start as Follower on restart
+            commit_index: 0, // Always start at 0 on restart
+            last_applied: 0, // Always start at 0 on restart
+        };
         raft_state.validate_header()?;
         Ok(raft_state)
     }
@@ -68,14 +86,13 @@ impl RaftState {
         // Write header
         MemoryMapUtil::write_u32(&mut self.buffer, 0, RAFT_STATE_MAGIC);
         MemoryMapUtil::write_u32(&mut self.buffer, 4, RAFT_STATE_VERSION);
-        
-        // Initialize state with default values
+
+        // Initialize persistent state with default values
         MemoryMapUtil::write_u64(&mut self.buffer, 8, 0);  // current_term = 0
         MemoryMapUtil::write_u32(&mut self.buffer, 16, 0); // voted_for = None (0)
-        MemoryMapUtil::write_u64(&mut self.buffer, 20, 0); // commit_index = 0
-        MemoryMapUtil::write_u64(&mut self.buffer, 28, 0); // last_applied = 0
-        MemoryMapUtil::write_u8(&mut self.buffer, 36, ServerState::Follower.into()); // server_state = Follower
-        // Bytes 37-39 are reserved for alignment
+
+        // Note: Volatile state (server_state, commit_index, last_applied) is NOT persisted to disk
+        // These fields are kept in memory only and always start with default values on server startup/restart
     }
 
     /// Validates the header of an existing state file
@@ -125,35 +142,34 @@ impl RaftState {
         MemoryMapUtil::write_u32(&mut self.buffer, 16, value);
     }
 
-    /// Gets the commit index
+    /// Gets the commit index (volatile, in-memory only)
     pub fn get_commit_index(&self) -> u64 {
-        MemoryMapUtil::read_u64(&self.buffer, 20)
+        self.commit_index
     }
 
-    /// Sets the commit index
+    /// Sets the commit index (volatile, in-memory only)
     pub fn set_commit_index(&mut self, index: u64) {
-        MemoryMapUtil::write_u64(&mut self.buffer, 20, index);
+        self.commit_index = index;
     }
 
-    /// Gets the last applied index
+    /// Gets the last applied index (volatile, in-memory only)
     pub fn get_last_applied(&self) -> u64 {
-        MemoryMapUtil::read_u64(&self.buffer, 28)
+        self.last_applied
     }
 
-    /// Sets the last applied index
+    /// Sets the last applied index (volatile, in-memory only)
     pub fn set_last_applied(&mut self, index: u64) {
-        MemoryMapUtil::write_u64(&mut self.buffer, 28, index);
+        self.last_applied = index;
     }
 
-    /// Gets the current server state
+    /// Gets the current server state (volatile, in-memory only)
     pub fn get_server_state(&self) -> ServerState {
-        let state_byte = MemoryMapUtil::read_u8(&self.buffer, 36);
-        ServerState::from(state_byte)
+        self.server_state
     }
 
-    /// Sets the current server state
+    /// Sets the current server state (volatile, in-memory only)
     pub fn set_server_state(&mut self, state: ServerState) {
-        MemoryMapUtil::write_u8(&mut self.buffer, 36, state.into());
+        self.server_state = state;
     }
 
     /// Atomically updates term and clears voted_for (used when starting new term)
@@ -313,18 +329,221 @@ mod tests {
         assert_eq!(raft_state.get_server_state(), ServerState::Follower);
     }
 
-    #[test]
-    fn test_server_state_conversion() {
-        // Test ServerState to u8 conversion
-        assert_eq!(u8::from(ServerState::Follower), 0);
-        assert_eq!(u8::from(ServerState::Candidate), 1);
-        assert_eq!(u8::from(ServerState::Leader), 2);
 
-        // Test u8 to ServerState conversion
-        assert_eq!(ServerState::from(0), ServerState::Follower);
-        assert_eq!(ServerState::from(1), ServerState::Candidate);
-        assert_eq!(ServerState::from(2), ServerState::Leader);
-        assert_eq!(ServerState::from(255), ServerState::Follower); // Unknown values default to Follower
+
+    #[test]
+    fn test_volatile_server_state() {
+        let (raft_state, _temp_dir) = create_test_state_file();
+
+        // Verify that a newly created state file starts as Follower
+        assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+
+        // Verify that volatile state is not persisted to disk (file is only 20 bytes)
+        assert_eq!(raft_state.buffer.len(), 20);
+    }
+
+    #[test]
+    fn test_server_state_always_starts_as_follower() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let state_path = temp_dir.path().join("raft_state.meta");
+
+        // Create a new state file (simulating server startup)
+        {
+            let mut raft_state = RaftState::new(&state_path).expect("Failed to create RaftState");
+
+            // Server should start as Follower
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+
+            // Change to Candidate
+            raft_state.set_server_state(ServerState::Candidate);
+            assert_eq!(raft_state.get_server_state(), ServerState::Candidate);
+
+            // Change to Leader
+            raft_state.set_server_state(ServerState::Leader);
+            assert_eq!(raft_state.get_server_state(), ServerState::Leader);
+        } // raft_state goes out of scope
+
+        // Load the state file again (simulating server restart)
+        {
+            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+
+            // Should ALWAYS start as Follower regardless of previous state
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+        }
+
+        // Test multiple restarts
+        {
+            let mut raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            raft_state.set_server_state(ServerState::Leader);
+            assert_eq!(raft_state.get_server_state(), ServerState::Leader);
+        }
+
+        {
+            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            // Should still start as Follower
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+        }
+    }
+
+    #[test]
+    fn test_server_state_completely_volatile() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let state_path = temp_dir.path().join("raft_state.meta");
+
+        // Test that server state is never written to disk
+        {
+            let mut raft_state = RaftState::new(&state_path).expect("Failed to create RaftState");
+
+            // Set some persistent state
+            raft_state.set_current_term(42);
+            raft_state.set_voted_for(Some(123));
+            raft_state.set_commit_index(10);
+            raft_state.set_last_applied(5);
+
+            // Set volatile server state
+            raft_state.set_server_state(ServerState::Leader);
+            assert_eq!(raft_state.get_server_state(), ServerState::Leader);
+
+            // Verify file size is exactly what we expect (no volatile state persisted)
+            assert_eq!(raft_state.buffer.len(), 20); // Only persistent fields
+        }
+
+        // Restart and verify persistent state is preserved but server state resets
+        {
+            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+
+            // Persistent state should be preserved
+            assert_eq!(raft_state.get_current_term(), 42);
+            assert_eq!(raft_state.get_voted_for(), Some(123));
+
+            // Volatile state should ALWAYS reset to defaults
+            assert_eq!(raft_state.get_commit_index(), 0);
+            assert_eq!(raft_state.get_last_applied(), 0);
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+
+            // File should still be the same size
+            assert_eq!(raft_state.buffer.len(), 20);
+        }
+
+        // Test that changing server state doesn't affect file size or persistent data
+        {
+            let mut raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+
+            // Change server state multiple times
+            raft_state.set_server_state(ServerState::Candidate);
+            raft_state.set_server_state(ServerState::Leader);
+            raft_state.set_server_state(ServerState::Follower);
+
+            // File size should remain unchanged
+            assert_eq!(raft_state.buffer.len(), 20);
+
+            // Persistent state should be unaffected
+            assert_eq!(raft_state.get_current_term(), 42);
+            assert_eq!(raft_state.get_voted_for(), Some(123));
+        }
+    }
+
+    #[test]
+    fn test_no_server_state_conversion_needed() {
+        // This test verifies that we no longer need conversion traits
+        // since server state is completely volatile
+
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let state_path = temp_dir.path().join("raft_state.meta");
+
+        let mut raft_state = RaftState::new(&state_path).expect("Failed to create RaftState");
+
+        // Server state operations work purely in memory
+        assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+
+        raft_state.set_server_state(ServerState::Candidate);
+        assert_eq!(raft_state.get_server_state(), ServerState::Candidate);
+
+        raft_state.set_server_state(ServerState::Leader);
+        assert_eq!(raft_state.get_server_state(), ServerState::Leader);
+
+        // No conversion to/from u8 is needed or used
+        // The enum values are purely for in-memory comparison
+        assert_ne!(raft_state.get_server_state(), ServerState::Follower);
+        assert_ne!(raft_state.get_server_state(), ServerState::Candidate);
+        assert_eq!(raft_state.get_server_state(), ServerState::Leader);
+    }
+
+    #[test]
+    fn test_commit_index_and_last_applied_completely_volatile() {
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let state_path = temp_dir.path().join("raft_state.meta");
+
+        // Test that commit_index and last_applied are never written to disk
+        {
+            let mut raft_state = RaftState::new(&state_path).expect("Failed to create RaftState");
+
+            // All volatile state should start at default values
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+            assert_eq!(raft_state.get_commit_index(), 0);
+            assert_eq!(raft_state.get_last_applied(), 0);
+
+            // Set some persistent state
+            raft_state.set_current_term(100);
+            raft_state.set_voted_for(Some(456));
+
+            // Set volatile state
+            raft_state.set_server_state(ServerState::Leader);
+            raft_state.set_commit_index(50);
+            raft_state.set_last_applied(45);
+
+            // Verify volatile state is set correctly
+            assert_eq!(raft_state.get_server_state(), ServerState::Leader);
+            assert_eq!(raft_state.get_commit_index(), 50);
+            assert_eq!(raft_state.get_last_applied(), 45);
+
+            // Verify file size is exactly what we expect (only persistent fields)
+            assert_eq!(raft_state.buffer.len(), 20); // Magic(4) + Version(4) + Term(8) + VotedFor(4)
+        }
+
+        // Restart and verify persistent state is preserved but volatile state resets
+        {
+            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+
+            // Persistent state should be preserved
+            assert_eq!(raft_state.get_current_term(), 100);
+            assert_eq!(raft_state.get_voted_for(), Some(456));
+
+            // ALL volatile state should reset to defaults
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+            assert_eq!(raft_state.get_commit_index(), 0);
+            assert_eq!(raft_state.get_last_applied(), 0);
+
+            // File should still be the same size
+            assert_eq!(raft_state.buffer.len(), 20);
+        }
+
+        // Test multiple restarts to confirm behavior is consistent
+        for i in 1..=3 {
+            let mut raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+
+            // Volatile state should always start at defaults
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
+            assert_eq!(raft_state.get_commit_index(), 0);
+            assert_eq!(raft_state.get_last_applied(), 0);
+
+            // Change volatile state
+            raft_state.set_server_state(ServerState::Candidate);
+            raft_state.set_commit_index(i * 10);
+            raft_state.set_last_applied(i * 5);
+
+            // Verify changes work in memory
+            assert_eq!(raft_state.get_server_state(), ServerState::Candidate);
+            assert_eq!(raft_state.get_commit_index(), i * 10);
+            assert_eq!(raft_state.get_last_applied(), i * 5);
+
+            // File size should never change
+            assert_eq!(raft_state.buffer.len(), 20);
+
+            // Persistent state should be unaffected
+            assert_eq!(raft_state.get_current_term(), 100);
+            assert_eq!(raft_state.get_voted_for(), Some(456));
+        }
     }
 
     #[test]
@@ -428,16 +647,22 @@ mod tests {
             raft_state.set_commit_index(50);
             raft_state.set_last_applied(45);
             raft_state.set_server_state(ServerState::Candidate);
-        } // raft_state goes out of scope, file should be persisted
+
+            // Verify in-memory state is set correctly
+            assert_eq!(raft_state.get_server_state(), ServerState::Candidate);
+        } // raft_state goes out of scope, persistent state should be saved
 
         // Load state from file and verify values
         {
             let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            // Persistent state should be recovered
             assert_eq!(raft_state.get_current_term(), 100);
             assert_eq!(raft_state.get_voted_for(), Some(999));
-            assert_eq!(raft_state.get_commit_index(), 50);
-            assert_eq!(raft_state.get_last_applied(), 45);
-            assert_eq!(raft_state.get_server_state(), ServerState::Candidate);
+            // Volatile state should ALWAYS reset to 0 on restart
+            assert_eq!(raft_state.get_commit_index(), 0);
+            assert_eq!(raft_state.get_last_applied(), 0);
+            // Server state should ALWAYS start as Follower (volatile, not persisted)
+            assert_eq!(raft_state.get_server_state(), ServerState::Follower);
         }
     }
 
@@ -463,12 +688,12 @@ mod tests {
             raft_state.set_commit_index(10);
         }
 
-        // Third cycle - verify changes persisted
+        // Third cycle - verify persistent changes persisted, volatile state reset
         {
             let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
             assert_eq!(raft_state.get_current_term(), 2);
             assert_eq!(raft_state.get_voted_for(), None); // Should be cleared by start_new_term
-            assert_eq!(raft_state.get_commit_index(), 10);
+            assert_eq!(raft_state.get_commit_index(), 0); // Volatile state resets to 0
         }
     }
 

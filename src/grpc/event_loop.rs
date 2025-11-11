@@ -1,7 +1,7 @@
+use log::{debug, info, warn};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::{interval, sleep, Instant};
-use log::{info, debug, warn};
 
 use super::client::RaftGrpcClient;
 use crate::log::{models::ClusterConfig, RaftNode, RequestVoteRequest};
@@ -176,7 +176,7 @@ impl RaftEventLoop {
         // Use RaftNode's tested create_heartbeats() method
         let heartbeat_requests = {
             let node = self.raft_node.lock().unwrap();
-            node.create_heartbeats() // Returns Vec<(NodeId, AppendEntriesRequest)>
+            node.create_heartbeats()
         };
 
         if heartbeat_requests.is_empty() {
@@ -202,20 +202,7 @@ impl RaftEventLoop {
                     if let Some(original_request) = original_requests.get(&node_id) {
                         let response_success = response.success;
                         let mut node = self.raft_node.lock().unwrap();
-                        let still_leader = node.handle_append_entries_response(
-                            node_id,
-                            original_request,
-                            response,
-                        );
-
-                        if !still_leader {
-                            info!(
-                                "📉 Stepped down from leader due to higher term from Node {}",
-                                node_id
-                            );
-                            return;
-                        }
-
+                        node.handle_append_entries_response(node_id, original_request, response);
                         if response_success {
                             debug!("✅ Heartbeat to Node {} successful", node_id);
                         } else {
