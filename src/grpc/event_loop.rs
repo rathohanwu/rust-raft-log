@@ -1,11 +1,16 @@
 use log::{debug, info, warn};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::task::JoinSet;
 use tokio::time::{interval, sleep, Instant};
 
 use super::client::RaftGrpcClient;
-use crate::{models::{ClusterConfig, RequestVoteRequest}, consensus::RaftNode};
 use crate::ServerState::*;
+use crate::{
+    consensus::RaftNode,
+    models::{ClusterConfig, RequestVoteRequest},
+};
 
 /// Configuration for Raft timing parameters
 #[derive(Debug, Clone)]
@@ -62,7 +67,7 @@ impl RaftEventLoop {
     pub async fn run(&self) {
         info!("🔄 Starting Raft event loop...");
 
-        let election_timeout = self.generate_election_timeout();
+        let mut election_timeout = self.generate_election_timeout();
         let mut heartbeat_interval =
             interval(Duration::from_millis(self.timing_config.heartbeat_interval));
 
@@ -73,23 +78,28 @@ impl RaftEventLoop {
                 break;
             }
 
-            let mut current_state = {
+            let current_state = {
                 let node = self.raft_node.lock().unwrap();
                 node.get_server_state()
             };
 
-            if self.is_election_timeout_expired(&election_timeout) && current_state != Leader {
-                current_state = Candidate;
-            }
-
             match current_state {
-                Follower => {}
-                Candidate => {
+                Follower | Candidate if self.is_election_timeout_expired(&election_timeout) => {
                     let vote_request = {
                         let mut node = self.raft_node.lock().unwrap();
                         node.create_vote_request()
                     };
-                    self.send_vote_requests(vote_request.unwrap()).await;
+                    // Each election gets a fresh timeout and its own timer start.
+                    election_timeout = self.generate_election_timeout();
+                    self.reset_election_timeout();
+                    if let Some(vote_request) = vote_request {
+                        self.send_vote_requests(vote_request).await;
+                    }
+                }
+                Follower => {}
+                Candidate => {
+                    // Wait for this election's timer instead of starting another
+                    // election on every event-loop tick.
                 }
                 Leader => {
                     heartbeat_interval.tick().await;
@@ -135,13 +145,22 @@ impl RaftEventLoop {
             other_nodes.len()
         );
 
-        // Send the vote request to all other nodes
+        // Process vote RPCs as they arrive. A dead peer must not delay a vote
+        // from a reachable peer long enough to lose this election round.
+        let mut requests = JoinSet::new();
         for target_node_id in other_nodes {
             let request_clone = vote_request.clone();
-            let response = self
-                .grpc_client
-                .request_vote(target_node_id, request_clone)
-                .await;
+            let client = self.grpc_client.clone();
+            requests.spawn(async move {
+                let response = client.request_vote(target_node_id, request_clone).await;
+                (target_node_id, response)
+            });
+        }
+
+        while let Some(result) = requests.join_next().await {
+            let Ok((target_node_id, response)) = result else {
+                continue;
+            };
 
             match response {
                 Ok(vote_response) => {
@@ -157,11 +176,8 @@ impl RaftEventLoop {
                     };
 
                     if won_election {
-                        // The become_leader() method will log the leadership transition
-                        // so we don't need to duplicate the logging here
-                        let mut node = self.raft_node.lock().unwrap();
-                        node.become_leader();
-                        break; // Stop sending more requests
+                        requests.abort_all();
+                        return;
                     }
                 }
                 Err(e) => {
@@ -217,32 +233,19 @@ impl RaftEventLoop {
         }
     }
 
-    /// Generate a deterministic election timeout based on node ID to reduce split votes
-    ///
-    /// Uses the formula: election_timeout = min_timeout + ((max_timeout - min_timeout) / total_nodes) * node_id
-    ///
-    /// This approach:
-    /// 1. Ensures each node has a different, predictable election timeout
-    /// 2. Distributes timeouts evenly across the configured range
-    /// 3. Reduces the probability of simultaneous elections and split votes
-    /// 4. Maintains deterministic behavior for easier debugging and testing
+    /// Draw a new timeout for every election. A tiny local PRNG avoids coupling
+    /// timeout selection to a static node ID while keeping the runtime dependency-free.
     fn generate_election_timeout(&self) -> Duration {
         let (min_ms, max_ms) = self.timing_config.election_timeout_range;
-
-        // Get node ID and total number of nodes from the cluster configuration
-        let (node_id, total_nodes) = {
-            let node = self.raft_node.lock().unwrap();
-            let config = node.get_config();
-            (config.node_id as u64, config.cluster_size() as u64)
-        };
-
-        // Apply the deterministic formula:
-        // election_timeout = min_timeout + ((max_timeout - min_timeout) / total_nodes) * node_id
-        let timeout_range = max_ms - min_ms;
-        let node_offset = (timeout_range * node_id) / total_nodes;
-        let timeout_ms = min_ms + node_offset;
-
-        Duration::from_millis(timeout_ms)
+        let span = max_ms.saturating_sub(min_ms);
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let wall_clock = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let seed = wall_clock ^ COUNTER.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+        let mixed = seed ^ (seed >> 30);
+        Duration::from_millis(min_ms + if span == 0 { 0 } else { mixed % (span + 1) })
     }
 
     /// Signal the event loop to shutdown

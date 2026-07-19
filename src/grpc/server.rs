@@ -1,21 +1,24 @@
-use std::sync::{Arc, Mutex};
-use tokio::task::JoinHandle;
-use tonic::transport::Server;
 use log::info;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
 
 use super::client::RaftGrpcClient;
 use super::event_loop::RaftEventLoop;
-use super::service::RaftGrpcService;
 use super::proto::raft_service_server::RaftServiceServer;
-use crate::{models::ClusterConfig, consensus::RaftNode};
-
-
+use super::service::RaftGrpcService;
+use crate::{consensus::RaftNode, models::ClusterConfig};
 
 /// gRPC server that hosts the Raft service (only receives requests)
 pub struct RaftGrpcServer {
     raft_node: Arc<Mutex<RaftNode>>,
     event_loop: RaftEventLoop,
     config: ClusterConfig,
+    available: Arc<AtomicBool>,
 }
 
 impl RaftGrpcServer {
@@ -31,6 +34,7 @@ impl RaftGrpcServer {
             raft_node: raft_node_arc,
             event_loop,
             config,
+            available: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -46,6 +50,7 @@ impl RaftGrpcServer {
         let service = RaftGrpcService::new(
             Arc::clone(&self.raft_node),
             self.event_loop.clone(),
+            Arc::clone(&self.available),
         );
         let svc = RaftServiceServer::new(service);
 
@@ -90,6 +95,7 @@ impl RaftGrpcServer {
         let service = RaftGrpcService::new(
             Arc::clone(&self.raft_node),
             self.event_loop.clone(),
+            Arc::clone(&self.available),
         );
         let svc = RaftServiceServer::new(service);
 
@@ -110,6 +116,38 @@ impl RaftGrpcServer {
         Ok((event_loop_handle, server_handle))
     }
 
+    /// Start on a listener supplied by the caller. This is primarily useful for
+    /// integration tests, which retain a clone of the listener to reserve a
+    /// stable port across node restarts.
+    pub fn start_with_listener(
+        &self,
+        listener: tokio::net::TcpListener,
+    ) -> (
+        JoinHandle<()>,
+        JoinHandle<Result<(), tonic::transport::Error>>,
+    ) {
+        let service = RaftGrpcService::new(
+            Arc::clone(&self.raft_node),
+            self.event_loop.clone(),
+            Arc::clone(&self.available),
+        );
+        let svc = RaftServiceServer::new(service);
+
+        let event_loop = self.event_loop.clone();
+        let event_loop_handle = tokio::spawn(async move {
+            event_loop.run().await;
+        });
+
+        let server_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(svc)
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+        });
+
+        (event_loop_handle, server_handle)
+    }
+
     /// Get a reference to the wrapped RaftNode for external access
     pub fn get_raft_node(&self) -> Arc<Mutex<RaftNode>> {
         Arc::clone(&self.raft_node)
@@ -127,6 +165,7 @@ impl RaftGrpcServer {
 
     /// Shutdown the server and event loop
     pub fn shutdown(&self) {
+        self.available.store(false, Ordering::Release);
         self.event_loop.shutdown();
     }
 }
@@ -137,6 +176,7 @@ impl Clone for RaftGrpcServer {
             raft_node: Arc::clone(&self.raft_node),
             event_loop: self.event_loop.clone(),
             config: self.config.clone(),
+            available: Arc::clone(&self.available),
         }
     }
 }

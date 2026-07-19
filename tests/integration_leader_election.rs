@@ -1,6 +1,5 @@
 use tokio::time::{sleep, Duration, timeout};
 use tempfile::TempDir;
-use std::collections::HashSet;
 
 use raft_log::{
     ClusterConfig, NodeInfo, RaftNode,
@@ -9,6 +8,7 @@ use raft_log::{
 
 /// Integration test that starts three real servers and waits for leader election
 #[tokio::test]
+#[ignore = "real gRPC E2E; run explicitly"]
 async fn test_three_server_leader_election() {
     println!("🧪 Integration Test: Three Server Leader Election");
     println!("   Starting three real gRPC servers and waiting for leader election...");

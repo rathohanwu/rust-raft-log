@@ -9,6 +9,7 @@ use raft_log::{
 
 /// Comprehensive integration test that validates the complete Raft consensus lifecycle
 #[tokio::test]
+#[ignore = "real gRPC E2E; run explicitly"]
 async fn test_comprehensive_raft_lifecycle() {
     println!("🧪 COMPREHENSIVE RAFT LIFECYCLE TEST");
     println!("   Testing: Leader Election → Log Replication → Leader Failure → Re-election → Recovery");

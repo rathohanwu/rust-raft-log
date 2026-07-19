@@ -1,6 +1,6 @@
 use super::segment::LogFileSegment;
-use crate::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError, EntryType, ServerState, NodeId, ClusterConfig, NodeInfo};
 use super::utils::create_memory_mapped_file;
+use crate::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -93,15 +93,6 @@ impl RaftLog {
         // Find the segment with the largest base_index <= index
         self.segments
             .range(..=index)
-            .next_back()
-            .map(|(_, segment)| segment)
-    }
-
-    /// Gets the mutable segment that contains the given index
-    fn get_segment_for_index_mut(&mut self, index: u64) -> Option<&mut LogFileSegment> {
-        // Find the segment with the largest base_index <= index
-        self.segments
-            .range_mut(..=index)
             .next_back()
             .map(|(_, segment)| segment)
     }
@@ -201,8 +192,20 @@ impl RaftLog {
         }
     }
 
-    /// Appends a single log entry to the log
-    pub fn append_entry(&mut self, mut log_entry: LogEntry) -> Result<(), RaftLogError> {
+    /// Appends one entry and makes it durable before returning.
+    ///
+    /// Use `append_entry_unflushed` only when the caller owns a larger Raft
+    /// durability boundary and will call `flush` before acknowledging it.
+    pub fn append_entry(&mut self, log_entry: LogEntry) -> Result<(), RaftLogError> {
+        self.append_entry_unflushed(log_entry)?;
+        self.flush()
+    }
+
+    /// Appends one entry without synchronizing it to stable storage.
+    ///
+    /// This is intentionally public for protocol code that batches an entire
+    /// AppendEntries RPC. Callers must flush before reporting success.
+    pub fn append_entry_unflushed(&mut self, mut log_entry: LogEntry) -> Result<(), RaftLogError> {
         // Set the index for the entry
         log_entry.index = self.next_index;
 
@@ -217,19 +220,22 @@ impl RaftLog {
                 Ok(())
             }
             AppendResult::RotationNeeded => {
-                // Create new segment and recursively call append_entry
+                // Create new segment and recursively append without flushing.
                 self.create_new_segment(self.next_index)?;
-                self.append_entry(LogEntry::new(log_entry.term, 0, log_entry.payload))
+                self.append_entry_unflushed(log_entry)
             }
         }
     }
 
-    /// Appends multiple log entries to the log
+    /// Appends multiple entries and performs one durability barrier.
     pub fn append_entries(&mut self, log_entries: Vec<LogEntry>) -> Result<(), RaftLogError> {
-        for log_entry in log_entries {
-            self.append_entry(log_entry)?;
+        if log_entries.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        for log_entry in log_entries {
+            self.append_entry_unflushed(log_entry)?;
+        }
+        self.flush()
     }
 
     /// Gets a single log entry by index
@@ -279,7 +285,8 @@ impl RaftLog {
 
     /// Gets the last log entry in the log
     pub fn get_last_log_entry(&self) -> Option<LogEntry> {
-        self.last_index().and_then(|last_index| self.get_entry(last_index))
+        self.last_index()
+            .and_then(|last_index| self.get_entry(last_index))
     }
 
     /// Truncates the log from the given index (inclusive)
@@ -337,6 +344,17 @@ impl RaftLog {
         Ok(truncated)
     }
 
+    /// Flush all segments. Kept public for callers that need an explicit
+    /// durability barrier around a multi-entry operation.
+    pub fn flush(&mut self) -> Result<(), RaftLogError> {
+        for segment in self.segments.values_mut() {
+            segment.flush().map_err(|e| {
+                RaftLogError::SegmentFileError(format!("Failed to flush log segment: {}", e))
+            })?;
+        }
+        Ok(())
+    }
+
     /// Gets the total number of entries in the log
     pub fn len(&self) -> u64 {
         self.segments.values().map(|s| s.get_entry_count()).sum()
@@ -367,6 +385,7 @@ impl RaftLog {
 mod tests {
     use super::*;
     use crate::consensus::RaftState;
+    use crate::models::{ClusterConfig, EntryType, NodeInfo, ServerState};
     use tempfile::TempDir;
 
     /// Creates a test config using a temporary directory that gets cleaned up automatically.
@@ -392,7 +411,11 @@ mod tests {
     fn create_test_cluster_config() -> (ClusterConfig, TempDir) {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
-        let meta_path = temp_dir.path().join("raft_state.meta").to_string_lossy().to_string();
+        let meta_path = temp_dir
+            .path()
+            .join("raft_state.meta")
+            .to_string_lossy()
+            .to_string();
 
         // Create a 3-node cluster for testing
         let nodes = vec![
@@ -406,38 +429,12 @@ mod tests {
             nodes,
             log_dir,
             meta_path,
-            1024, // 1KB segments for testing
-            1000, // max_entries_per_query
+            1024,       // 1KB segments for testing
+            1000,       // max_entries_per_query
             (150, 300), // Election timeout range
             50,         // Heartbeat interval
         );
         (cluster_config, temp_dir)
-    }
-
-    /// Creates a test cluster config that uses a local directory for file inspection.
-    /// Use this when you want to examine the generated segment files after the test.
-    /// Files will be created in a unique "./raft_logs_<test_name>" directory.
-    fn create_inspectable_cluster_config(test_name: &str) -> ClusterConfig {
-        let log_dir = format!("./raft_logs_{}", test_name);
-        let meta_path = format!("./raft_logs_{}/raft_state.meta", test_name);
-
-        // Create a 3-node cluster for testing
-        let nodes = vec![
-            NodeInfo::new(1, "127.0.0.1".to_string(), 8001),
-            NodeInfo::new(2, "127.0.0.1".to_string(), 8002),
-            NodeInfo::new(3, "127.0.0.1".to_string(), 8003),
-        ];
-
-        ClusterConfig::new(
-            1, // This is node 1
-            nodes,
-            log_dir,
-            meta_path,
-            1024, // 1KB segments for testing
-            1000, // max_entries_per_query
-            (150, 300), // Election timeout range
-            50,         // Heartbeat interval
-        )
     }
 
     /// Creates a test config that uses a local directory for file inspection.
@@ -625,7 +622,6 @@ mod tests {
             .get_entries(40, 50)
             .expect("Failed to get entries 40-50");
         assert_eq!(entries_40_to_50.len(), 11);
-
     }
 
     #[test]
@@ -807,7 +803,6 @@ mod tests {
                 raft_log
                     .append_entry(entry)
                     .expect("Failed to append entry");
-
             }
         }
 
@@ -899,7 +894,6 @@ mod tests {
             .expect("Failed to get last new entry");
         assert_eq!(last_new_entry.term, 6);
         assert!(last_new_entry.payload.starts_with(b"Post-truncation"));
-
     }
 
     #[test]
@@ -953,7 +947,9 @@ mod tests {
         // Add some entries
         for i in 1..=5 {
             let entry = create_test_entry(1, &format!("entry {}", i));
-            raft_log.append_entry(entry).expect("Failed to append entry");
+            raft_log
+                .append_entry(entry)
+                .expect("Failed to append entry");
         }
 
         // Now entries exist - clean Option API
@@ -970,26 +966,41 @@ mod tests {
         }
 
         // Invalid requests return None (no exceptions!)
-        assert!(raft_log.get_entry(0).is_none());        // Invalid index
-        assert!(raft_log.get_entry(100).is_none());      // Non-existent
-        assert!(raft_log.get_entries(5, 3).is_none());   // Invalid range
+        assert!(raft_log.get_entry(0).is_none()); // Invalid index
+        assert!(raft_log.get_entry(100).is_none()); // Non-existent
+        assert!(raft_log.get_entries(5, 3).is_none()); // Invalid range
     }
 
     #[test]
     fn test_entry_type_support_in_raft_log() {
-
         let (config, _temp_dir) = create_test_config();
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
 
         // Test appending entries with different types
-        let normal_entry = LogEntry::new_with_type(1, 0, EntryType::Normal, "normal command".as_bytes().to_vec());
-        raft_log.append_entry(normal_entry).expect("Failed to append normal entry");
+        let normal_entry = LogEntry::new_with_type(
+            1,
+            0,
+            EntryType::Normal,
+            "normal command".as_bytes().to_vec(),
+        );
+        raft_log
+            .append_entry(normal_entry)
+            .expect("Failed to append normal entry");
 
         let noop_entry = LogEntry::new_with_type(1, 0, EntryType::NoOp, vec![]);
-        raft_log.append_entry(noop_entry).expect("Failed to append noop entry");
+        raft_log
+            .append_entry(noop_entry)
+            .expect("Failed to append noop entry");
 
-        let another_normal = LogEntry::new_with_type(2, 0, EntryType::Normal, "another command".as_bytes().to_vec());
-        raft_log.append_entry(another_normal).expect("Failed to append another normal entry");
+        let another_normal = LogEntry::new_with_type(
+            2,
+            0,
+            EntryType::Normal,
+            "another command".as_bytes().to_vec(),
+        );
+        raft_log
+            .append_entry(another_normal)
+            .expect("Failed to append another normal entry");
 
         // Verify entries can be retrieved with correct types
         let entry1 = raft_log.get_entry(1).expect("Should get entry 1");
@@ -1015,7 +1026,9 @@ mod tests {
         assert_eq!(entries[2].entry_type, EntryType::Normal);
 
         // Test last entry
-        let last_entry = raft_log.get_last_log_entry().expect("Should get last entry");
+        let last_entry = raft_log
+            .get_last_log_entry()
+            .expect("Should get last entry");
         assert_eq!(last_entry.entry_type, EntryType::Normal);
         assert_eq!(last_entry.term, 2);
     }
@@ -1054,13 +1067,21 @@ mod tests {
 
         // Append some log entries as leader
         let entry1 = LogEntry::new_with_type(2, 0, EntryType::NoOp, vec![]); // Leader heartbeat
-        raft_log.append_entry(entry1).expect("Failed to append NoOp entry");
+        raft_log
+            .append_entry(entry1)
+            .expect("Failed to append NoOp entry");
 
-        let entry2 = LogEntry::new_with_type(2, 0, EntryType::Normal, "command1".as_bytes().to_vec());
-        raft_log.append_entry(entry2).expect("Failed to append normal entry");
+        let entry2 =
+            LogEntry::new_with_type(2, 0, EntryType::Normal, "command1".as_bytes().to_vec());
+        raft_log
+            .append_entry(entry2)
+            .expect("Failed to append normal entry");
 
-        let entry3 = LogEntry::new_with_type(2, 0, EntryType::Normal, "command2".as_bytes().to_vec());
-        raft_log.append_entry(entry3).expect("Failed to append normal entry");
+        let entry3 =
+            LogEntry::new_with_type(2, 0, EntryType::Normal, "command2".as_bytes().to_vec());
+        raft_log
+            .append_entry(entry3)
+            .expect("Failed to append normal entry");
 
         // 5. Update commit and apply indices
         raft_state.set_commit_index(3); // All entries committed
@@ -1103,13 +1124,10 @@ mod tests {
         assert_eq!(reloaded_snapshot.server_state, ServerState::Follower);
         assert_eq!(reloaded_snapshot.commit_index, 0);
         assert_eq!(reloaded_snapshot.last_applied, 0);
-
     }
 
     #[test]
     fn test_cluster_config_integration() {
-        use tempfile::TempDir;
-
         // Create cluster config for node 1 in a 3-node cluster
         let (cluster_config, _temp_dir) = create_test_cluster_config();
 
@@ -1122,7 +1140,9 @@ mod tests {
         assert_eq!(cluster_config.max_entries_per_query, 1000);
 
         // Verify this node's information
-        let this_node = cluster_config.get_this_node().expect("Should find this node");
+        let this_node = cluster_config
+            .get_this_node()
+            .expect("Should find this node");
         assert_eq!(this_node.node_id, 1);
         assert_eq!(this_node.get_address(), "127.0.0.1:8001");
 
@@ -1143,11 +1163,15 @@ mod tests {
         let mut raft_log = RaftLog::new(raft_log_config).expect("Failed to create RaftLog");
 
         // Create RaftState using cluster config
-        let mut raft_state = RaftState::new(&cluster_config.meta_file_path).expect("Failed to create RaftState");
+        let mut raft_state =
+            RaftState::new(&cluster_config.meta_file_path).expect("Failed to create RaftState");
 
         // Test basic operations
-        let entry = LogEntry::new_with_type(1, 0, EntryType::Normal, "test command".as_bytes().to_vec());
-        raft_log.append_entry(entry).expect("Failed to append entry");
+        let entry =
+            LogEntry::new_with_type(1, 0, EntryType::Normal, "test command".as_bytes().to_vec());
+        raft_log
+            .append_entry(entry)
+            .expect("Failed to append entry");
 
         raft_state.set_current_term(1);
         raft_state.set_server_state(ServerState::Leader);
@@ -1156,7 +1180,6 @@ mod tests {
         assert_eq!(raft_log.len(), 1);
         assert_eq!(raft_state.get_current_term(), 1);
         assert_eq!(raft_state.get_server_state(), ServerState::Leader);
-
     }
 
     #[test]
@@ -1207,6 +1230,5 @@ mod tests {
         assert_eq!(single_node_config.cluster_size(), 1);
         assert_eq!(single_node_config.majority_size(), 1);
         assert_eq!(single_node_config.get_other_nodes().len(), 0);
-
     }
 }

@@ -39,21 +39,21 @@ pub struct RaftState {
 impl RaftState {
     /// Creates a new RaftState with default values
     pub fn new<P: AsRef<Path>>(file_path: P) -> Result<Self, RaftStateError> {
-        let path_str = file_path.as_ref()
+        let path_str = file_path
+            .as_ref()
             .to_str()
             .ok_or_else(|| RaftStateError::StateFileError("Invalid UTF-8 path".to_string()))?;
 
-        let buffer = create_memory_mapped_file(
-            path_str,
-            RAFT_STATE_HEADER_SIZE as u64,
-        )
-        .map_err(|e| RaftStateError::StateFileError(format!("Failed to create state file: {}", e)))?;
+        let buffer =
+            create_memory_mapped_file(path_str, RAFT_STATE_HEADER_SIZE as u64).map_err(|e| {
+                RaftStateError::StateFileError(format!("Failed to create state file: {}", e))
+            })?;
 
         let mut raft_state = RaftState {
             buffer,
             server_state: ServerState::Follower, // Always start as Follower
-            commit_index: 0, // Always start at 0
-            last_applied: 0, // Always start at 0
+            commit_index: 0,                     // Always start at 0
+            last_applied: 0,                     // Always start at 0
         };
         raft_state.initialize_new_state();
         Ok(raft_state)
@@ -61,21 +61,21 @@ impl RaftState {
 
     /// Loads existing RaftState from file
     pub fn from_existing<P: AsRef<Path>>(file_path: P) -> Result<Self, RaftStateError> {
-        let path_str = file_path.as_ref()
+        let path_str = file_path
+            .as_ref()
             .to_str()
             .ok_or_else(|| RaftStateError::StateFileError("Invalid UTF-8 path".to_string()))?;
 
-        let buffer = create_memory_mapped_file(
-            path_str,
-            RAFT_STATE_HEADER_SIZE as u64,
-        )
-        .map_err(|e| RaftStateError::StateFileError(format!("Failed to open state file: {}", e)))?;
+        let buffer =
+            create_memory_mapped_file(path_str, RAFT_STATE_HEADER_SIZE as u64).map_err(|e| {
+                RaftStateError::StateFileError(format!("Failed to open state file: {}", e))
+            })?;
 
         let raft_state = RaftState {
             buffer,
             server_state: ServerState::Follower, // Always start as Follower on restart
-            commit_index: 0, // Always start at 0 on restart
-            last_applied: 0, // Always start at 0 on restart
+            commit_index: 0,                     // Always start at 0 on restart
+            last_applied: 0,                     // Always start at 0 on restart
         };
         raft_state.validate_header()?;
         Ok(raft_state)
@@ -88,8 +88,11 @@ impl RaftState {
         MemoryMapUtil::write_u32(&mut self.buffer, 4, RAFT_STATE_VERSION);
 
         // Initialize persistent state with default values
-        MemoryMapUtil::write_u64(&mut self.buffer, 8, 0);  // current_term = 0
+        MemoryMapUtil::write_u64(&mut self.buffer, 8, 0); // current_term = 0
         MemoryMapUtil::write_u32(&mut self.buffer, 16, 0); // voted_for = None (0)
+
+        // A freshly initialized state file is also persistent state.
+        self.flush().expect("failed to flush initial Raft state");
 
         // Note: Volatile state (server_state, commit_index, last_applied) is NOT persisted to disk
         // These fields are kept in memory only and always start with default values on server startup/restart
@@ -140,6 +143,13 @@ impl RaftState {
     pub fn set_voted_for(&mut self, node_id: Option<NodeId>) {
         let value = node_id.unwrap_or(0);
         MemoryMapUtil::write_u32(&mut self.buffer, 16, value);
+    }
+
+    /// Persists currentTerm and votedFor. Call this before replying to an RPC
+    /// whose outcome depends on either value.
+    pub fn flush(&mut self) -> Result<(), RaftStateError> {
+        MemoryMapUtil::flush(&mut self.buffer)
+            .map_err(|e| RaftStateError::IoError(format!("Failed to flush Raft state: {}", e)))
     }
 
     /// Gets the commit index (volatile, in-memory only)
@@ -329,8 +339,6 @@ mod tests {
         assert_eq!(raft_state.get_server_state(), ServerState::Follower);
     }
 
-
-
     #[test]
     fn test_volatile_server_state() {
         let (raft_state, _temp_dir) = create_test_state_file();
@@ -365,7 +373,8 @@ mod tests {
 
         // Load the state file again (simulating server restart)
         {
-            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
 
             // Should ALWAYS start as Follower regardless of previous state
             assert_eq!(raft_state.get_server_state(), ServerState::Follower);
@@ -373,13 +382,15 @@ mod tests {
 
         // Test multiple restarts
         {
-            let mut raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let mut raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
             raft_state.set_server_state(ServerState::Leader);
             assert_eq!(raft_state.get_server_state(), ServerState::Leader);
         }
 
         {
-            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
             // Should still start as Follower
             assert_eq!(raft_state.get_server_state(), ServerState::Follower);
         }
@@ -410,7 +421,8 @@ mod tests {
 
         // Restart and verify persistent state is preserved but server state resets
         {
-            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
 
             // Persistent state should be preserved
             assert_eq!(raft_state.get_current_term(), 42);
@@ -427,7 +439,8 @@ mod tests {
 
         // Test that changing server state doesn't affect file size or persistent data
         {
-            let mut raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let mut raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
 
             // Change server state multiple times
             raft_state.set_server_state(ServerState::Candidate);
@@ -503,7 +516,8 @@ mod tests {
 
         // Restart and verify persistent state is preserved but volatile state resets
         {
-            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
 
             // Persistent state should be preserved
             assert_eq!(raft_state.get_current_term(), 100);
@@ -520,7 +534,8 @@ mod tests {
 
         // Test multiple restarts to confirm behavior is consistent
         for i in 1..=3 {
-            let mut raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let mut raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
 
             // Volatile state should always start at defaults
             assert_eq!(raft_state.get_server_state(), ServerState::Follower);
@@ -654,7 +669,8 @@ mod tests {
 
         // Load state from file and verify values
         {
-            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
             // Persistent state should be recovered
             assert_eq!(raft_state.get_current_term(), 100);
             assert_eq!(raft_state.get_voted_for(), Some(999));
@@ -680,7 +696,8 @@ mod tests {
 
         // Second cycle - load and modify
         {
-            let mut raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let mut raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
             assert_eq!(raft_state.get_current_term(), 1);
             assert_eq!(raft_state.get_voted_for(), Some(100));
 
@@ -690,7 +707,8 @@ mod tests {
 
         // Third cycle - verify persistent changes persisted, volatile state reset
         {
-            let raft_state = RaftState::from_existing(&state_path).expect("Failed to load RaftState");
+            let raft_state =
+                RaftState::from_existing(&state_path).expect("Failed to load RaftState");
             assert_eq!(raft_state.get_current_term(), 2);
             assert_eq!(raft_state.get_voted_for(), None); // Should be cleared by start_new_term
             assert_eq!(raft_state.get_commit_index(), 0); // Volatile state resets to 0
