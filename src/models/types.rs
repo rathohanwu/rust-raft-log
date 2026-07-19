@@ -35,6 +35,7 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
+    #[cfg(test)]
     pub(crate) fn new(term: u64, index: u64, payload: Vec<u8>) -> Self {
         LogEntry {
             term,

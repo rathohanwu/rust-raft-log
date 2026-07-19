@@ -1,6 +1,5 @@
 use tokio::time::{sleep, Duration, timeout};
 use tempfile::TempDir;
-use std::collections::HashSet;
 
 use raft_log::{
     ClusterConfig, NodeInfo, RaftNode,

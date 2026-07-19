@@ -1,7 +1,7 @@
 use super::state::{RaftState, RaftStateSnapshot};
 use crate::models::{
     AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, EntryType, LogEntry, NodeId,
-    NodeInfo, RequestVoteRequest, RequestVoteResponse, ServerState,
+    RequestVoteRequest, RequestVoteResponse, ServerState,
 };
 use crate::storage::RaftLog;
 use log::{debug, info};
@@ -706,6 +706,7 @@ impl RaftNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::NodeInfo;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 

@@ -7,12 +7,11 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Status};
 
 use super::proto::raft_service_client::RaftServiceClient;
-use crate::models::conversions::*;
 use crate::models::types_proto::{
     ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest, ProtoRequestVoteRequest,
 };
 use crate::models::{
-    AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, NodeId, NodeInfo,
+    AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, NodeId,
     RequestVoteRequest, RequestVoteResponse,
 };
 

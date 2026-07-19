@@ -12,7 +12,7 @@ use crate::models::types_proto::{
     ProtoAppendEntriesResponse, ProtoRequestVoteRequest, ProtoRequestVoteResponse,
 };
 use crate::ServerState;
-use crate::{consensus::RaftNode, models::ClusterConfig};
+use crate::consensus::RaftNode;
 
 /// gRPC service implementation that wraps RaftNode
 pub struct RaftGrpcService {

@@ -1,4 +1,4 @@
-use crate::models::{NodeId, LogEntry, EntryType};
+use crate::models::{NodeId, LogEntry};
 
 /// RequestVote RPC - Invoked by candidates to gather votes
 #[derive(Debug, Clone, PartialEq)]
@@ -156,6 +156,7 @@ impl AppendEntriesResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::EntryType;
 
     #[test]
     fn test_request_vote_request() {

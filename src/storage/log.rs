@@ -1,9 +1,6 @@
 use super::segment::LogFileSegment;
 use super::utils::create_memory_mapped_file;
-use crate::models::{
-    AppendResult, ClusterConfig, EntryType, LogEntry, NodeId, NodeInfo, RaftLogConfig,
-    RaftLogError, ServerState,
-};
+use crate::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -96,15 +93,6 @@ impl RaftLog {
         // Find the segment with the largest base_index <= index
         self.segments
             .range(..=index)
-            .next_back()
-            .map(|(_, segment)| segment)
-    }
-
-    /// Gets the mutable segment that contains the given index
-    fn get_segment_for_index_mut(&mut self, index: u64) -> Option<&mut LogFileSegment> {
-        // Find the segment with the largest base_index <= index
-        self.segments
-            .range_mut(..=index)
             .next_back()
             .map(|(_, segment)| segment)
     }
@@ -397,6 +385,7 @@ impl RaftLog {
 mod tests {
     use super::*;
     use crate::consensus::RaftState;
+    use crate::models::{ClusterConfig, EntryType, NodeInfo, ServerState};
     use tempfile::TempDir;
 
     /// Creates a test config using a temporary directory that gets cleaned up automatically.
@@ -446,32 +435,6 @@ mod tests {
             50,         // Heartbeat interval
         );
         (cluster_config, temp_dir)
-    }
-
-    /// Creates a test cluster config that uses a local directory for file inspection.
-    /// Use this when you want to examine the generated segment files after the test.
-    /// Files will be created in a unique "./raft_logs_<test_name>" directory.
-    fn create_inspectable_cluster_config(test_name: &str) -> ClusterConfig {
-        let log_dir = format!("./raft_logs_{}", test_name);
-        let meta_path = format!("./raft_logs_{}/raft_state.meta", test_name);
-
-        // Create a 3-node cluster for testing
-        let nodes = vec![
-            NodeInfo::new(1, "127.0.0.1".to_string(), 8001),
-            NodeInfo::new(2, "127.0.0.1".to_string(), 8002),
-            NodeInfo::new(3, "127.0.0.1".to_string(), 8003),
-        ];
-
-        ClusterConfig::new(
-            1, // This is node 1
-            nodes,
-            log_dir,
-            meta_path,
-            1024,       // 1KB segments for testing
-            1000,       // max_entries_per_query
-            (150, 300), // Election timeout range
-            50,         // Heartbeat interval
-        )
     }
 
     /// Creates a test config that uses a local directory for file inspection.
@@ -1165,8 +1128,6 @@ mod tests {
 
     #[test]
     fn test_cluster_config_integration() {
-        use tempfile::TempDir;
-
         // Create cluster config for node 1 in a 3-node cluster
         let (cluster_config, _temp_dir) = create_test_cluster_config();
 
