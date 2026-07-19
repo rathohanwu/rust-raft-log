@@ -1,13 +1,14 @@
-use crate::models::{AppendResult, LogEntry, EntryType};
+use super::mmap_utils::MemoryMapUtil;
 use super::utils::{
     BASE_INDEX_OFFSET, ENTRY_COUNT_OFFSET, HEADER_SIZE, MAGIC_OFFSET, START_APPEND_POSITION_OFFSET,
     VERSION_OFFSET,
 };
-use super::mmap_utils::MemoryMapUtil;
+use crate::models::{AppendResult, EntryType, LogEntry};
 use byteorder::{LittleEndian, ReadBytesExt};
-use memmap2::MmapMut;
-use std::io::Cursor;
 use log::error;
+use memmap2::MmapMut;
+use std::io;
+use std::io::Cursor;
 
 /// Header for a log segment file.
 ///
@@ -31,6 +32,10 @@ pub struct LogFileSegment {
 }
 
 impl LogFileSegment {
+    /// Flush this segment's mmap to stable storage.
+    pub fn flush(&mut self) -> io::Result<()> {
+        MemoryMapUtil::flush(&mut self.buffer)
+    }
     pub fn new(buffer: MmapMut, base_index: u64) -> Self {
         let mut log_segment = LogFileSegment { buffer };
         log_segment.initialize_header_for_new_log_segment(base_index);
@@ -136,7 +141,11 @@ impl LogFileSegment {
         MemoryMapUtil::write_u64(&mut self.buffer, start_position, total_payload_size);
         MemoryMapUtil::write_u64(&mut self.buffer, start_position + 8, log_entry.term);
         MemoryMapUtil::write_u64(&mut self.buffer, start_position + 16, log_entry.index);
-        MemoryMapUtil::write_u8(&mut self.buffer, start_position + 24, log_entry.entry_type.clone().into());
+        MemoryMapUtil::write_u8(
+            &mut self.buffer,
+            start_position + 24,
+            log_entry.entry_type.clone().into(),
+        );
         MemoryMapUtil::write_vec_8(&mut self.buffer, start_position + 25, &log_entry.payload);
         start_position as u64 + total_payload_size
     }
@@ -328,7 +337,12 @@ mod tests {
         let mut log_segment = LogFileSegment::new(memory_map, 1);
 
         // Test Normal entry type
-        let normal_entry = LogEntry::new_with_type(1, 1, EntryType::Normal, "normal command".as_bytes().to_vec());
+        let normal_entry = LogEntry::new_with_type(
+            1,
+            1,
+            EntryType::Normal,
+            "normal command".as_bytes().to_vec(),
+        );
         let result = log_segment.append_entry(normal_entry.clone());
         assert!(matches!(result, AppendResult::Success));
 
@@ -338,13 +352,17 @@ mod tests {
         assert!(matches!(result, AppendResult::Success));
 
         // Verify entries can be retrieved with correct types
-        let retrieved_normal = log_segment.get_entry_at(1).expect("Should retrieve normal entry");
+        let retrieved_normal = log_segment
+            .get_entry_at(1)
+            .expect("Should retrieve normal entry");
         assert_eq!(retrieved_normal.entry_type, EntryType::Normal);
         assert_eq!(retrieved_normal.term, 1);
         assert_eq!(retrieved_normal.index, 1);
         assert_eq!(retrieved_normal.payload, "normal command".as_bytes());
 
-        let retrieved_noop = log_segment.get_entry_at(2).expect("Should retrieve noop entry");
+        let retrieved_noop = log_segment
+            .get_entry_at(2)
+            .expect("Should retrieve noop entry");
         assert_eq!(retrieved_noop.entry_type, EntryType::NoOp);
         assert_eq!(retrieved_noop.term, 1);
         assert_eq!(retrieved_noop.index, 2);
@@ -367,7 +385,8 @@ mod tests {
 
     #[test]
     fn test_calculate_total_size_with_entry_type() {
-        let normal_entry = LogEntry::new_with_type(1, 1, EntryType::Normal, "test".as_bytes().to_vec());
+        let normal_entry =
+            LogEntry::new_with_type(1, 1, EntryType::Normal, "test".as_bytes().to_vec());
         // term (8) + index (8) + entry_type (1) + payload_size (8) + payload (4) = 29
         assert_eq!(normal_entry.calculate_total_size(), 29);
 

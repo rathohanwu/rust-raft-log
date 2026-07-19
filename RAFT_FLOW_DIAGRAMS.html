@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Raft RPC and Event Loop Diagrams</title>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'strict' });
+  </script>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; background: #f6f8fb; color: #172033; }
+    main { max-width: 1200px; margin: 0 auto; padding: 36px 20px 64px; }
+    h1 { margin: 0 0 8px; }
+    h2 { margin-top: 40px; }
+    .lede { color: #516078; max-width: 860px; line-height: 1.55; }
+    .diagram { background: white; border: 1px solid #dce3ee; border-radius: 12px; padding: 18px; overflow-x: auto; box-shadow: 0 2px 8px #1720330d; }
+    code { background: #e9edf4; border-radius: 4px; padding: 1px 5px; }
+    .note { border-left: 4px solid #2b6cb0; padding: 10px 14px; background: #edf5ff; line-height: 1.5; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Raft RPC and Event Loop Diagrams</h1>
+  <p class="lede">
+    These diagrams describe the current implementation of <code>handle_request_vote</code>,
+    <code>handle_append_entries</code>, and <code>RaftEventLoop::run</code>. Persistent term/vote
+    state and changed log data are made durable before a successful protocol response is returned.
+  </p>
+
+  <h2>RequestVote: sequence</h2>
+  <div class="diagram mermaid">
+sequenceDiagram
+    participant C as Candidate
+    participant S as gRPC service
+    participant N as RaftNode
+    participant D as Persistent state
+    C->>S: RequestVote(term, candidate, lastLog)
+    S->>N: handle_request_vote(request)
+    alt Request term is older than current term
+        N-->>S: deny(currentTerm)
+    else current/new term
+        alt Request term is newer than current term
+            N->>N: become follower and clear current leader
+        end
+        N->>N: compare candidate log with local log
+        alt candidate is up-to-date and vote is allowed
+            N->>N: record vote for candidate
+            N->>D: flush currentTerm/votedFor
+            D-->>N: durable
+            N-->>S: grant(currentTerm)
+        else deny (already voted or stale candidate log)
+            opt term changed
+                N->>D: flush new currentTerm
+                D-->>N: durable
+            end
+            N-->>S: deny(currentTerm)
+        end
+    end
+    S-->>C: RequestVoteResponse
+  </div>
+
+  <h2>RequestVote: decision flow</h2>
+  <div class="diagram mermaid">
+flowchart TD
+    A[RequestVote arrives] --> B{Request term is older?}
+    B -- yes --> C[Return deny with current term]
+    B -- no --> D{Request term is newer?}
+    D -- yes --> E[Set new term clear vote and become follower]
+    D -- no --> F[Keep current hard state]
+    E --> G[Check candidate log is up-to-date]
+    F --> G
+    G --> H{Eligible and vote allowed?}
+    H -- yes --> I[Record vote]
+    I --> J[Persist hard state once]
+    J --> K[Return grant]
+    H -- no --> L{Hard state changed?}
+    L -- yes --> M[Persist new term before denial]
+    L -- no --> N[Return deny]
+    M --> N
+  </div>
+
+  <h2>AppendEntries: sequence</h2>
+  <div class="diagram mermaid">
+sequenceDiagram
+    participant L as Leader
+    participant S as gRPC service
+    participant F as Follower RaftNode
+    participant Log as Raft log
+    participant State as Persistent state
+    L->>S: AppendEntries(term, prevLog, entries, leaderCommit)
+    S->>F: handle_append_entries(request)
+    alt Request term is older than current term
+        F-->>S: failure(currentTerm, lastIndex)
+    else valid term
+        opt Request term is newer
+            F->>F: become follower and record leader
+        end
+        F->>Log: verify prevLog index and term
+        alt prevLog does not match
+            opt term changed
+                F->>State: flush new currentTerm
+            end
+            F-->>S: failure(currentTerm, lastIndex)
+        else heartbeat (no entries)
+            opt term changed
+                F->>State: flush new currentTerm
+            end
+            F->>F: advance commitIndex and apply committed entries
+            F-->>S: success(currentTerm, lastIndex)
+        else entries present
+            F->>Log: keep matching prefix and truncate first conflict
+            F->>Log: append remaining entries without per-entry sync
+            F->>Log: flush changed log batch
+            opt term changed
+                F->>State: flush new currentTerm
+            end
+            F->>F: advance commitIndex and apply committed entries
+            F-->>S: success(currentTerm, lastIndex)
+        end
+    end
+    S-->>L: AppendEntriesResponse
+  </div>
+
+  <h2>AppendEntries: decision flow</h2>
+  <div class="diagram mermaid">
+flowchart TD
+    A[AppendEntries arrives] --> B{Request term is older?}
+    B -- yes --> C[Return failure]
+    B -- no --> D[Update follower/leader tracking if needed]
+    D --> E{prevLog index and term match?}
+    E -- no --> F{Term changed?}
+    F -- yes --> G[Persist new term]
+    F -- no --> H[Return failure]
+    G --> H
+    E -- yes --> I{entries empty?}
+    I -- yes --> J{Term changed?}
+    J -- yes --> K[Persist new term]
+    J -- no --> L[Advance commit index and apply]
+    K --> L
+    L --> M[Return success]
+    I -- no --> N[Find first conflict and preserve matching prefix]
+    N --> O[Truncate conflicting suffix if needed]
+    O --> P[Append only new entries without syncing each entry]
+    P --> Q[Flush changed log batch]
+    Q --> R{Term changed?}
+    R -- yes --> S[Persist new term]
+    R -- no --> T[Advance commit index and apply]
+    S --> T
+    T --> M
+  </div>
+
+  <h2>Event loop: runtime sequence</h2>
+  <div class="diagram mermaid">
+sequenceDiagram
+    participant EL as RaftEventLoop run
+    participant Node as RaftNode
+    participant Peers as Peer nodes
+    EL->>EL: create randomized election timeout and heartbeat interval
+    loop until shutdown signal
+        EL->>Node: read server state
+        alt Follower/Candidate and election timeout elapsed
+            EL->>Node: create_vote_request()
+            Node-->>EL: None when self vote already wins otherwise request
+            EL->>EL: draw and reset next election timeout
+            opt vote request exists
+                EL->>Peers: Send RequestVote RPCs concurrently
+                Peers-->>EL: vote responses as they arrive
+                EL->>Node: handle_vote_response(...)
+                opt majority reached
+                    Node->>Node: become leader and append NoOp
+                    EL->>EL: cancel remaining vote RPCs
+                end
+            end
+        else Leader
+            EL->>EL: wait for heartbeat interval tick
+            EL->>Node: create heartbeats and replication requests
+            EL->>Peers: AppendEntries concurrently
+            Peers-->>EL: AppendEntries responses
+            EL->>Node: handle_append_entries_response(...)
+        else Follower/Candidate without timeout
+            EL->>EL: wait for RPC or timer progress
+        end
+        EL->>EL: short sleep to avoid busy waiting
+    end
+  </div>
+
+  <h2>Event loop: control flow</h2>
+  <div class="diagram mermaid">
+flowchart TD
+    A[Start run] --> B[Generate randomized election timeout]
+    B --> C{Shutdown requested?}
+    C -- yes --> Z[Exit event loop]
+    C -- no --> D[Read Raft server state]
+    D --> E{Follower/Candidate and election timeout expired?}
+    E -- yes --> F[create_vote_request]
+    F --> G[Generate/reset election timeout]
+    G --> H{Vote request returned?}
+    H -- yes --> I[Send RequestVote RPCs concurrently]
+    I --> J[Process responses until completed or majority wins]
+    H -- no --> K[Self-vote won or election could not start]
+    J --> Y[Sleep 10ms]
+    K --> Y
+    E -- no --> L{Leader?}
+    L -- yes --> M[Wait for heartbeat interval]
+    M --> N[Build AppendEntries requests]
+    N --> O[Send RPCs and process responses]
+    O --> Y
+    L -- no --> Y
+    Y --> C
+  </div>
+
+  <p class="note">
+    A required flush failure is fail-stop in the current node implementation: it is not encoded as an
+    ordinary Raft denial or append failure, because that could acknowledge a decision whose hard state
+    was not durable.
+  </p>
+</main>
+</body>
+</html>

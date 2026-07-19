@@ -7,6 +7,7 @@ use raft_log::{ClusterConfig, NodeInfo, RaftGrpcServer, RaftNode, ServerState};
 /// Focused integration test that validates core Raft consensus lifecycle
 /// This test is more robust against leader churn and focuses on key properties
 #[tokio::test]
+#[ignore = "real gRPC E2E; run explicitly"]
 async fn test_focused_raft_lifecycle() {
     println!("🧪 FOCUSED RAFT LIFECYCLE TEST");
     println!("   Testing: Leader Election → Log Replication → Leader Failure → Recovery");

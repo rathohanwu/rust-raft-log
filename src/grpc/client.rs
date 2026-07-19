@@ -1,21 +1,23 @@
+use log::error;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Status};
-use log::{error};
 
-use crate::models::{
-    NodeId, NodeInfo, ClusterConfig,
-    RequestVoteRequest, RequestVoteResponse,
-    AppendEntriesRequest, AppendEntriesResponse
-};
 use super::proto::raft_service_client::RaftServiceClient;
-use crate::models::types_proto::{
-    ProtoRequestVoteRequest, ProtoAppendEntriesRequest,
-    ClientRequestMessage, ClientResponseMessage,
-};
 use crate::models::conversions::*;
+use crate::models::types_proto::{
+    ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest, ProtoRequestVoteRequest,
+};
+use crate::models::{
+    AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, NodeId, NodeInfo,
+    RequestVoteRequest, RequestVoteResponse,
+};
+
+const RAFT_RPC_TIMEOUT: Duration = Duration::from_millis(500);
+const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// gRPC client with persistent connection management for Raft RPCs
 #[derive(Clone)]
@@ -46,14 +48,18 @@ impl RaftGrpcClient {
         }
 
         // Connection doesn't exist, create a new one
-        let node_info = self.config.get_node(node_id)
+        let node_info = self
+            .config
+            .get_node(node_id)
             .ok_or_else(|| Status::not_found(format!("Node {} not found in cluster", node_id)))?;
 
         let endpoint = Endpoint::from_shared(format!("http://{}", node_info.get_address()))
-            .map_err(|e| Status::internal(format!("Invalid endpoint: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Invalid endpoint: {}", e)))?
+            .connect_timeout(Duration::from_millis(250));
 
-        let channel = endpoint.connect().await
-            .map_err(|e| Status::unavailable(format!("Failed to connect to node {}: {}", node_id, e)))?;
+        let channel = endpoint.connect().await.map_err(|e| {
+            Status::unavailable(format!("Failed to connect to node {}: {}", node_id, e))
+        })?;
 
         let client = RaftServiceClient::new(channel);
 
@@ -73,10 +79,18 @@ impl RaftGrpcClient {
         request: RequestVoteRequest,
     ) -> Result<RequestVoteResponse, Status> {
         let mut client = self.get_connection(node_id).await?;
-        
+
         let proto_request: ProtoRequestVoteRequest = request.into();
-        let response = client.request_vote(Request::new(proto_request)).await?;
-        
+        let mut request = Request::new(proto_request);
+        request.set_timeout(RAFT_RPC_TIMEOUT);
+        let response = match client.request_vote(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                self.close_connection(node_id).await;
+                return Err(error);
+            }
+        };
+
         let rust_response: RequestVoteResponse = response.into_inner().into();
         Ok(rust_response)
     }
@@ -88,10 +102,18 @@ impl RaftGrpcClient {
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, Status> {
         let mut client = self.get_connection(node_id).await?;
-        
+
         let proto_request: ProtoAppendEntriesRequest = request.into();
-        let response = client.append_entries(Request::new(proto_request)).await?;
-        
+        let mut request = Request::new(proto_request);
+        request.set_timeout(RAFT_RPC_TIMEOUT);
+        let response = match client.append_entries(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                self.close_connection(node_id).await;
+                return Err(error);
+            }
+        };
+
         let rust_response: AppendEntriesResponse = response.into_inner().into();
         Ok(rust_response)
     }
@@ -105,7 +127,16 @@ impl RaftGrpcClient {
         let mut client = self.get_connection(node_id).await?;
 
         let proto_request = ClientRequestMessage { payload };
-        let response = client.client_request(Request::new(proto_request)).await?;
+        let mut request = Request::new(proto_request);
+        // The server deliberately waits up to two seconds for majority commit.
+        request.set_timeout(CLIENT_REQUEST_TIMEOUT);
+        let response = match client.client_request(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                self.close_connection(node_id).await;
+                return Err(error);
+            }
+        };
 
         Ok(response.into_inner())
     }
@@ -121,17 +152,17 @@ impl RaftGrpcClient {
 
         // Send requests concurrently to all nodes
         let mut handles = Vec::new();
-        
+
         for node in other_nodes {
             let node_id = node.node_id;
             let request_clone = request.clone();
             let client = self.clone();
-            
+
             let handle = tokio::spawn(async move {
                 let result = client.request_vote(node_id, request_clone).await;
                 (node_id, result)
             });
-            
+
             handles.push(handle);
         }
 
@@ -161,12 +192,12 @@ impl RaftGrpcClient {
         // Send requests concurrently
         for (node_id, request) in requests {
             let client = self.clone();
-            
+
             let handle = tokio::spawn(async move {
                 let result = client.append_entries(node_id, request).await;
                 (node_id, result)
             });
-            
+
             handles.push(handle);
         }
 
@@ -201,5 +232,3 @@ impl RaftGrpcClient {
         connections.len()
     }
 }
-
-

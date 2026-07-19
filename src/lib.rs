@@ -12,7 +12,7 @@ pub use models::{
 };
 
 pub use consensus::{
-    RaftNode, RaftState, RaftStateSnapshot
+    RaftNode, RaftState, RaftStateSnapshot, StateMachine
 };
 
 pub use storage::{RaftLog, LogFileSegment};
