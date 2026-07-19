@@ -199,11 +199,24 @@ impl LogFileSegment {
 mod tests {
     use super::*;
     use crate::storage::utils::create_memory_mapped_file;
+    use std::path::PathBuf;
+
+    /// Returns a path under the repository-local test artifact directory.
+    ///
+    /// These tests exercise mmap-backed files, so keeping their artifacts out of
+    /// the caller's working directory avoids stray `.dat` files when Cargo is
+    /// launched from a parent directory.
+    fn test_segment_path(file_name: &str) -> String {
+        let temp_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("temp");
+        std::fs::create_dir_all(&temp_dir).expect("create test artifact directory");
+        temp_dir.join(file_name).to_string_lossy().into_owned()
+    }
 
     #[test]
     fn should_return_rotated_needed_result() {
-        let memory_map = create_memory_mapped_file("log-segment-0000010.dat", 67)
-            .expect("should be opened the file");
+        let memory_map =
+            create_memory_mapped_file(&test_segment_path("log-segment-0000010.dat"), 67)
+                .expect("should be opened the file");
 
         let mut log_segment = LogFileSegment::new(memory_map, 1);
         let result =
@@ -217,8 +230,9 @@ mod tests {
 
     #[test]
     fn should_return_success_result() {
-        let memory_map = create_memory_mapped_file("log-segment-0000011.dat", 100)
-            .expect("should be opened the file");
+        let memory_map =
+            create_memory_mapped_file(&test_segment_path("log-segment-0000011.dat"), 100)
+                .expect("should be opened the file");
 
         let mut log_segment = LogFileSegment::new(memory_map, 1);
         let result =
@@ -232,8 +246,9 @@ mod tests {
 
     #[test]
     fn should_return_correct_first_index_and_entry_count() {
-        let memory_map = create_memory_mapped_file("log-segment-0000001.dat", 10_000)
-            .expect("should be opened the file");
+        let memory_map =
+            create_memory_mapped_file(&test_segment_path("log-segment-0000001.dat"), 10_000)
+                .expect("should be opened the file");
 
         let mut log_segment = LogFileSegment::new(memory_map, 1);
         assert_eq!(0, log_segment.get_entry_count());
@@ -254,8 +269,9 @@ mod tests {
     #[test]
     fn should_return_empty_entry_result() {
         // Given
-        let memory_map = create_memory_mapped_file("log-segment-0000002.dat", 10_000)
-            .expect("should be opened the file");
+        let memory_map =
+            create_memory_mapped_file(&test_segment_path("log-segment-0000002.dat"), 10_000)
+                .expect("should be opened the file");
         let mut log_segment = LogFileSegment::new(memory_map, 8);
 
         // When & Then
@@ -278,8 +294,9 @@ mod tests {
     #[test]
     fn should_truncate_log_correctly() {
         // Given
-        let memory_map = create_memory_mapped_file("log-segment-0000003.dat", 10_000)
-            .expect("should be opened the file");
+        let memory_map =
+            create_memory_mapped_file(&test_segment_path("log-segment-0000003.dat"), 10_000)
+                .expect("should be opened the file");
         let mut log_segment = LogFileSegment::new(memory_map, 11);
         log_segment.append_entry(LogEntry::new(
             1,
@@ -331,8 +348,9 @@ mod tests {
 
     #[test]
     fn test_entry_type_encoding_decoding() {
-        let memory_map = create_memory_mapped_file("log-segment-entry-types.dat", 1000)
-            .expect("should be opened the file");
+        let memory_map =
+            create_memory_mapped_file(&test_segment_path("log-segment-entry-types.dat"), 1000)
+                .expect("should be opened the file");
 
         let mut log_segment = LogFileSegment::new(memory_map, 1);
 

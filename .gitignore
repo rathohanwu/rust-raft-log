@@ -19,3 +19,6 @@ Thumbs.db
 
 # Raft data
 raft-data/
+
+# Test artifacts
+temp/
