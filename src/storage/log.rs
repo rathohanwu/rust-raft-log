@@ -439,9 +439,11 @@ mod tests {
 
     /// Creates a test config that uses a local directory for file inspection.
     /// Use this when you want to examine the generated segment files after the test.
-    /// Files will be created in a unique "./raft_logs_<test_name>" directory.
+    /// Files will be created in a unique "./temp/raft_logs_<test_name>" directory.
     fn create_inspectable_test_config(test_name: &str) -> RaftLogConfig {
-        let log_dir = std::path::PathBuf::from(format!("./raft_logs_{}", test_name));
+        let log_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("temp")
+            .join(format!("raft_logs_{}", test_name));
         // Clean up any existing test files
         if log_dir.exists() {
             let _ = std::fs::remove_dir_all(&log_dir);
@@ -672,6 +674,7 @@ mod tests {
 
         for _i in 1..=10 {
             raft_log_small
+
                 .append_entry(create_test_entry(1, "test"))
                 .expect("Failed to append");
         }
@@ -929,7 +932,7 @@ mod tests {
         }
 
         assert_eq!(raft_log.len(), 3);
-        // Files remain in ./raft_logs/ for inspection
+        // Files remain in ./temp/raft_logs_example/ for inspection
     }
 
     #[test]
