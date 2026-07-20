@@ -187,12 +187,12 @@ impl RaftEventLoop {
         }
     }
 
-    /// Send heartbeats using RaftNode's tested create_heartbeats() method
+    /// Send replication/heartbeat work using RaftNode's unified builder.
     async fn send_heartbeats(&self) {
-        // Use RaftNode's tested create_heartbeats() method
+        // Lagging peers receive entries; caught-up peers receive heartbeats.
         let heartbeat_requests = {
             let node = self.raft_node.lock().unwrap();
-            node.create_heartbeats()
+            node.build_replication_requests()
         };
 
         if heartbeat_requests.is_empty() {

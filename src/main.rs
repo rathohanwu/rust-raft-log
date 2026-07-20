@@ -1,6 +1,6 @@
 use clap::Parser;
+use log::{error, info};
 use std::process;
-use log::{info, error};
 
 use raft_log::{RaftGrpcServer, RaftNode, YamlClusterConfig};
 

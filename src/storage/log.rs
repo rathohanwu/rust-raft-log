@@ -3,7 +3,7 @@ use super::utils::create_memory_mapped_file;
 use crate::models::{AppendResult, LogEntry, RaftLogConfig, RaftLogError};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// RaftLog manages a collection of log file segments for the Raft consensus algorithm.
 /// It provides methods to append, retrieve, and truncate log entries across multiple segments.
@@ -11,7 +11,10 @@ pub struct RaftLog {
     /// Configuration for the RaftLog
     config: RaftLogConfig,
     /// Map of base_index -> LogFileSegment for efficient segment lookup
-    segments: BTreeMap<u64, LogFileSegment>,
+    segments: BTreeMap<u64, (PathBuf, LogFileSegment)>,
+    /// Whole suffix segment files removed from the in-memory log. They are
+    /// unlinked only after the replacement/truncation metadata is durable.
+    pending_delete: Vec<PathBuf>,
     /// The next index to be assigned to a new log entry
     next_index: u64,
 }
@@ -32,6 +35,7 @@ impl RaftLog {
         let mut raft_log = RaftLog {
             config,
             segments: BTreeMap::new(),
+            pending_delete: Vec::new(),
             next_index: 1,
         };
 
@@ -84,7 +88,7 @@ impl RaftLog {
                 })?;
 
         let segment = LogFileSegment::new(memory_map, base_index);
-        self.segments.insert(base_index, segment);
+        self.segments.insert(base_index, (segment_path, segment));
         Ok(())
     }
 
@@ -94,17 +98,20 @@ impl RaftLog {
         self.segments
             .range(..=index)
             .next_back()
-            .map(|(_, segment)| segment)
+            .map(|(_, (_, segment))| segment)
     }
 
     /// Gets the last (most recent) segment
     fn get_last_segment(&self) -> Option<&LogFileSegment> {
-        self.segments.values().last()
+        self.segments.values().last().map(|(_, segment)| segment)
     }
 
     /// Gets the last (most recent) segment mutably
     fn get_last_segment_mut(&mut self) -> Option<&mut LogFileSegment> {
-        self.segments.values_mut().last()
+        self.segments
+            .values_mut()
+            .last()
+            .map(|(_, segment)| segment)
     }
 
     /// Loads existing segment files from the log directory
@@ -134,20 +141,38 @@ impl RaftLog {
             }
         }
 
-        // Load each segment and get base index from file header
+        // Load each segment and get base index from file header. A failure is
+        // corruption, not an excuse to silently omit part of a Raft log.
         let mut segments_with_base_index = Vec::new();
         for path in segment_files {
-            if let Ok((base_index, segment)) = self.load_segment_file(&path) {
-                segments_with_base_index.push((base_index, segment));
-            }
+            let (base_index, segment) = self.load_segment_file(&path)?;
+            segments_with_base_index.push((base_index, path, segment));
         }
 
         // Sort by base index
-        segments_with_base_index.sort_by_key(|(base_index, _)| *base_index);
+        segments_with_base_index.sort_by_key(|(base_index, _, _)| *base_index);
 
-        // Insert segments into the map
-        for (base_index, segment) in segments_with_base_index {
-            self.segments.insert(base_index, segment);
+        // Duplicate bases are ambiguous recovery; segments must also cover one
+        // contiguous log without holes.
+        let mut expected_base = 1;
+        for (base_index, path, segment) in segments_with_base_index {
+            if base_index != expected_base {
+                return Err(RaftLogError::CorruptedSegment(format!(
+                    "expected segment base {}, found {} in {:?}",
+                    expected_base, base_index, path
+                )));
+            }
+            let next_base = segment
+                .get_last_index()
+                .map(|i| i + 1)
+                .unwrap_or(base_index);
+            if self.segments.insert(base_index, (path, segment)).is_some() {
+                return Err(RaftLogError::CorruptedSegment(format!(
+                    "duplicate segment base index {}",
+                    base_index
+                )));
+            }
+            expected_base = next_base;
         }
 
         // Update next_index based on loaded segments
@@ -174,6 +199,12 @@ impl RaftLog {
 
         // Don't call new() which initializes header - the file already has a header
         let segment = LogFileSegment::from_existing(memory_map);
+        if !segment.validate_header() {
+            return Err(RaftLogError::CorruptedSegment(format!(
+                "invalid segment header in {:?}",
+                path
+            )));
+        }
 
         // Read the base index from the segment header
         let base_index = segment.get_base_index();
@@ -300,7 +331,7 @@ impl RaftLog {
         let mut truncated = false;
 
         // Find all segments that need to be truncated or removed
-        for (&base_index, segment) in self.segments.iter_mut() {
+        for (&base_index, (_, segment)) in self.segments.iter_mut() {
             let segment_last_index = segment.get_last_index();
 
             if let Some(last_index) = segment_last_index {
@@ -326,10 +357,12 @@ impl RaftLog {
             }
         }
 
-        // Remove empty segments from memory
-        // Note: File cleanup is handled separately since we don't track file paths by base_index
+        // Remove whole suffix segments from memory. Keep their paths until a
+        // later flush has made the replacement/truncation durable.
         for base_index in segments_to_remove {
-            self.segments.remove(&base_index);
+            if let Some((path, _)) = self.segments.remove(&base_index) {
+                self.pending_delete.push(path);
+            }
             truncated = true;
         }
 
@@ -347,17 +380,36 @@ impl RaftLog {
     /// Flush all segments. Kept public for callers that need an explicit
     /// durability barrier around a multi-entry operation.
     pub fn flush(&mut self) -> Result<(), RaftLogError> {
-        for segment in self.segments.values_mut() {
+        for (_, segment) in self.segments.values_mut() {
             segment.flush().map_err(|e| {
                 RaftLogError::SegmentFileError(format!("Failed to flush log segment: {}", e))
             })?;
         }
+        for path in self.pending_delete.drain(..) {
+            fs::remove_file(&path).map_err(|e| {
+                RaftLogError::SegmentFileError(format!(
+                    "Failed to remove obsolete segment {:?}: {}",
+                    path, e
+                ))
+            })?;
+        }
+        fs::File::open(&self.config.log_directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| {
+                RaftLogError::DirectoryError(format!(
+                    "Failed to sync log directory {:?}: {}",
+                    self.config.log_directory, e
+                ))
+            })?;
         Ok(())
     }
 
     /// Gets the total number of entries in the log
     pub fn len(&self) -> u64 {
-        self.segments.values().map(|s| s.get_entry_count()).sum()
+        self.segments
+            .values()
+            .map(|(_, s)| s.get_entry_count())
+            .sum()
     }
 
     /// Checks if the log is empty
@@ -592,6 +644,63 @@ mod tests {
     }
 
     #[test]
+    fn truncating_across_segments_removes_obsolete_files_before_reopen() {
+        let temp_dir = TempDir::new().expect("create temp directory");
+        let config = RaftLogConfig {
+            log_directory: temp_dir.path().join("logs"),
+            // Two 80-byte payload entries fit after the 32-byte header; the
+            // third rotates, giving the truncation a whole suffix segment.
+            segment_size: 256,
+            max_entries_per_query: 10,
+        };
+
+        {
+            let mut log = RaftLog::new(config.clone()).expect("create log");
+            for index in 1..=6 {
+                log.append_entry(LogEntry::new_with_type(
+                    1,
+                    index,
+                    EntryType::Normal,
+                    vec![index as u8; 80],
+                ))
+                .expect("append original entry");
+            }
+            assert!(log.segment_count() >= 3);
+            assert!(log.truncate_from(3).expect("truncate suffix"));
+            log.append_entry(LogEntry::new_with_type(
+                2,
+                0,
+                EntryType::Normal,
+                b"replacement-3".to_vec(),
+            ))
+            .expect("append replacement 3");
+            log.append_entry(LogEntry::new_with_type(
+                2,
+                0,
+                EntryType::Normal,
+                b"replacement-4".to_vec(),
+            ))
+            .expect("append replacement 4");
+        }
+
+        let reopened = RaftLog::new(config.clone()).expect("reopen replacement log");
+        assert_eq!(reopened.len(), 4);
+        assert_eq!(reopened.get_entry(1).unwrap().term, 1);
+        assert_eq!(reopened.get_entry(2).unwrap().term, 1);
+        assert_eq!(reopened.get_entry(3).unwrap().term, 2);
+        assert_eq!(reopened.get_entry(3).unwrap().payload, b"replacement-3");
+        assert_eq!(reopened.get_entry(4).unwrap().payload, b"replacement-4");
+        assert!(reopened.get_entry(5).is_none());
+
+        let segment_files = fs::read_dir(&config.log_directory)
+            .expect("read log directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".dat"))
+            .count();
+        assert_eq!(segment_files, reopened.segment_count());
+    }
+
+    #[test]
     fn test_segment_rotation() {
         let config = create_inspectable_test_config("segment_rotation");
         let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
@@ -674,7 +783,6 @@ mod tests {
 
         for _i in 1..=10 {
             raft_log_small
-
                 .append_entry(create_test_entry(1, "test"))
                 .expect("Failed to append");
         }

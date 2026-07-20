@@ -29,17 +29,20 @@ pub struct RaftNode {
     match_index: HashMap<NodeId, u64>,
     /// Volatile candidate state (only used when this node is candidate)
     votes_received: HashSet<NodeId>,
-    current_election_term: u64,
     /// Current leader ID (volatile state, None if unknown)
     current_leader: Option<NodeId>,
     /// Optional application-owned state machine. None keeps this usable as a
     /// pure consensus core while still advancing last_applied.
     state_machine: Option<Box<dyn StateMachine>>,
+    /// A persistence or invariant failure makes it unsafe to emit normal Raft
+    /// responses. The embedding service must treat this node as unavailable.
+    stopped: bool,
 }
 
 impl RaftNode {
     /// Creates a new RaftNode with the given cluster configuration
     pub fn new(config: ClusterConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::validate_config(&config)?;
         let log_config = config.to_raft_log_config();
         let log = RaftLog::new(log_config)?;
 
@@ -57,9 +60,9 @@ impl RaftNode {
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             votes_received: HashSet::new(),
-            current_election_term: 0,
             current_leader: None,
             state_machine: None,
+            stopped: false,
         })
     }
 
@@ -103,6 +106,35 @@ impl RaftNode {
         self.state.get_server_state()
     }
 
+    /// Whether this node has encountered a fatal persistence/invariant failure.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
+    fn validate_config(config: &ClusterConfig) -> Result<(), Box<dyn std::error::Error>> {
+        if config.node_id == 0 {
+            return Err("Raft node ID must be nonzero".into());
+        }
+        let mut voters = HashSet::new();
+        for node in &config.nodes {
+            if node.node_id == 0 || !voters.insert(node.node_id) {
+                return Err("Raft configuration must contain unique nonzero node IDs".into());
+            }
+        }
+        if !voters.contains(&config.node_id) {
+            return Err("Raft configuration must contain this node exactly once".into());
+        }
+        Ok(())
+    }
+
+    fn is_other_voter(&self, node_id: NodeId) -> bool {
+        node_id != self.config.node_id && self.config.get_node(node_id).is_some()
+    }
+
+    fn is_voter(&self, node_id: NodeId) -> bool {
+        self.config.get_node(node_id).is_some()
+    }
+
     /// Gets the log length
     pub fn get_log_length(&self) -> u64 {
         self.log.len()
@@ -129,10 +161,51 @@ impl RaftNode {
 
     /// Raft cannot safely turn a persistence failure into a normal protocol
     /// response. Stop this node rather than acknowledge unpersisted state.
-    fn persist_state_or_stop(&mut self) {
-        self.state
-            .flush()
-            .expect("failed to persist Raft hard state; stopping node");
+    fn stop(&mut self) {
+        self.stopped = true;
+        self.state.transition_to_state(ServerState::Follower);
+        self.votes_received.clear();
+        self.next_index.clear();
+        self.match_index.clear();
+        self.current_leader = None;
+    }
+
+    fn persist_state_or_stop(&mut self) -> bool {
+        if self.state.flush().is_err() {
+            self.stop();
+            return false;
+        }
+        true
+    }
+
+    fn finish_append_entries(
+        &mut self,
+        term: u64,
+        term_changed: bool,
+        log_changed: bool,
+        leader_commit: u64,
+        success: bool,
+    ) -> AppendEntriesResponse {
+        if self.stopped {
+            return AppendEntriesResponse::failure(term, self.log.last_index());
+        }
+        if log_changed && self.log.flush().is_err() {
+            self.stop();
+            return AppendEntriesResponse::failure(term, self.log.last_index());
+        }
+        if term_changed && !self.persist_state_or_stop() {
+            return AppendEntriesResponse::failure(term, self.log.last_index());
+        }
+        if success {
+            self.update_commit_index(leader_commit);
+            if self.stopped {
+                AppendEntriesResponse::failure(term, self.log.last_index())
+            } else {
+                AppendEntriesResponse::success(term, self.log.last_index())
+            }
+        } else {
+            AppendEntriesResponse::failure(term, self.log.last_index())
+        }
     }
 
     /// Applies every newly committed entry exactly once, in index order.
@@ -140,6 +213,10 @@ impl RaftNode {
         while self.state.get_last_applied() < self.state.get_commit_index() {
             let index = self.state.get_last_applied() + 1;
             let Some(entry) = self.log.get_entry(index) else {
+                // A committed index without a corresponding durable entry is
+                // storage corruption. Continuing would let this node report
+                // Raft progress while its state machine has skipped an entry.
+                self.stop();
                 break;
             };
             if entry.entry_type == EntryType::Normal {
@@ -153,6 +230,9 @@ impl RaftNode {
 
     /// Handles RequestVote RPC
     pub fn handle_request_vote(&mut self, request: RequestVoteRequest) -> RequestVoteResponse {
+        if self.stopped || !self.is_voter(request.candidate_id) {
+            return RequestVoteResponse::deny_vote(self.state.get_current_term());
+        }
         let current_term = self.state.get_current_term();
 
         // If request term is older, deny vote
@@ -183,8 +263,8 @@ impl RaftNode {
 
         // Raft requires the term/vote mutation to reach stable storage before
         // either a grant or a denial that reflects the new term is returned.
-        if hard_state_changed {
-            self.persist_state_or_stop();
+        if hard_state_changed && !self.persist_state_or_stop() {
+            return RequestVoteResponse::deny_vote(current_term);
         }
 
         if vote_granted {
@@ -215,6 +295,9 @@ impl RaftNode {
         request: AppendEntriesRequest,
     ) -> AppendEntriesResponse {
         let current_term = self.state.get_current_term();
+        if self.stopped || !self.is_voter(request.leader_id) {
+            return AppendEntriesResponse::failure(current_term, self.log.last_index());
+        }
 
         // If request term is older, reject
         if request.term < current_term {
@@ -262,29 +345,37 @@ impl RaftNode {
                 Some(prev_entry) => {
                     if prev_entry.term != request.prev_log_term {
                         // Previous entry term doesn't match
-                        if term_changed {
-                            self.persist_state_or_stop();
-                        }
-                        return AppendEntriesResponse::failure(current_term, self.log.last_index());
+                        return self.finish_append_entries(
+                            current_term,
+                            term_changed,
+                            false,
+                            request.leader_commit,
+                            false,
+                        );
                     }
                 }
                 None => {
                     // Don't have the previous entry
-                    if term_changed {
-                        self.persist_state_or_stop();
-                    }
-                    return AppendEntriesResponse::failure(current_term, self.log.last_index());
+                    return self.finish_append_entries(
+                        current_term,
+                        term_changed,
+                        false,
+                        request.leader_commit,
+                        false,
+                    );
                 }
             }
         }
 
         // If this is a heartbeat (no entries), just update commit index
         if request.entries.is_empty() {
-            if term_changed {
-                self.persist_state_or_stop();
-            }
-            self.update_commit_index(request.leader_commit);
-            return AppendEntriesResponse::success(current_term, self.log.last_index());
+            return self.finish_append_entries(
+                current_term,
+                term_changed,
+                false,
+                request.leader_commit,
+                true,
+            );
         }
 
         // Preserve the matching prefix.  Figure 2 only permits truncation at the
@@ -298,9 +389,7 @@ impl RaftNode {
                 Some(existing) if existing.term == incoming.term => continue,
                 Some(_) => {
                     if self.log.truncate_from(index).is_err() {
-                        if term_changed {
-                            self.persist_state_or_stop();
-                        }
+                        self.stop();
                         return AppendEntriesResponse::failure(current_term, self.log.last_index());
                     }
                     log_changed = true;
@@ -317,24 +406,19 @@ impl RaftNode {
         for entry in request.entries.into_iter().skip(first_to_append) {
             debug!("Appending entry from {}: {:?}", self.get_node_id(), entry);
             if self.log.append_entry_unflushed(entry).is_err() {
-                if term_changed {
-                    self.persist_state_or_stop();
-                }
+                self.stop();
                 return AppendEntriesResponse::failure(current_term, self.log.last_index());
             }
             log_changed = true;
         }
 
-        if log_changed {
-            self.log
-                .flush()
-                .expect("failed to persist Raft log; stopping node");
-        }
-        if term_changed {
-            self.persist_state_or_stop();
-        }
-        self.update_commit_index(request.leader_commit);
-        AppendEntriesResponse::success(current_term, self.log.last_index())
+        self.finish_append_entries(
+            current_term,
+            term_changed,
+            log_changed,
+            request.leader_commit,
+            true,
+        )
     }
 
     /// Updates the commit index based on leader's commit index
@@ -352,13 +436,18 @@ impl RaftNode {
     /// Returns None if the election cannot be started or the self-vote wins a
     /// single-node election immediately.
     pub fn create_vote_request(&mut self) -> Option<RequestVoteRequest> {
+        if self.stopped || self.state.get_server_state() == ServerState::Leader {
+            return None;
+        }
         // Increment term, clear vote, and become candidate
-        let new_term = self.state.get_current_term() + 1;
+        let Some(new_term) = self.state.get_current_term().checked_add(1) else {
+            self.stop();
+            return None;
+        };
         self.state.start_new_term_as_candidate(new_term);
 
         // Reset election state
         self.votes_received.clear();
-        self.current_election_term = new_term;
 
         // Clear current leader since we're starting an election
         self.current_leader = None;
@@ -368,7 +457,9 @@ impl RaftNode {
             // This shouldn't happen since we just cleared the vote
             return None;
         }
-        self.persist_state_or_stop();
+        if !self.persist_state_or_stop() {
+            return None;
+        }
 
         // Log election start
         info!(
@@ -398,6 +489,9 @@ impl RaftNode {
         from_node: NodeId,
         response: RequestVoteResponse,
     ) -> bool {
+        if self.stopped || !self.is_other_voter(from_node) {
+            return false;
+        }
         if response.term > self.state.get_current_term() {
             self.state.start_new_term_as_follower(response.term);
             self.votes_received.clear();
@@ -407,7 +501,7 @@ impl RaftNode {
         }
 
         // Only process votes for current election term
-        if response.term != self.current_election_term
+        if response.term != self.state.get_current_term()
             || self.state.get_server_state() != ServerState::Candidate
         {
             return false;
@@ -433,7 +527,7 @@ impl RaftNode {
                     self.config.node_id,
                     self.votes_received.len(),
                     self.config.cluster_size(),
-                    self.current_election_term
+                    self.state.get_current_term()
                 );
                 self.become_leader();
                 return true;
@@ -455,17 +549,35 @@ impl RaftNode {
 
     /// Checks if currently in an election
     pub fn is_in_election(&self) -> bool {
-        self.state.get_server_state() == ServerState::Candidate
-            && self.current_election_term == self.state.get_current_term()
+        !self.stopped && self.state.get_server_state() == ServerState::Candidate
     }
 
     /// Becomes leader (initializes leader state)
-    pub fn become_leader(&mut self) {
-        if self.state.get_server_state() == ServerState::Leader {
-            return;
+    fn become_leader(&mut self) -> bool {
+        let election_is_valid = self.state.get_server_state() == ServerState::Candidate
+            && self.state.get_voted_for() == Some(self.config.node_id)
+            && self.votes_received.contains(&self.config.node_id)
+            && self.votes_received.len() >= self.config.majority_size();
+        debug_assert!(
+            election_is_valid,
+            "leader transition requires a current-term quorum"
+        );
+        if self.stopped || !election_is_valid {
+            return false;
         }
         let current_term = self.state.get_current_term();
         let node_id = self.config.node_id;
+        // Followers must begin at the first entry of this leader term (the
+        // no-op appended below), not after it.
+        let next_index = self.log.last_index().unwrap_or(0) + 1;
+
+        // A leader must not be externally visible until its current-term no-op
+        // has reached stable storage.
+        let noop_entry = LogEntry::new_with_type(current_term, 0, EntryType::NoOp, vec![]);
+        if self.log.append_entry(noop_entry).is_err() {
+            self.stop();
+            return false;
+        }
 
         self.state.transition_to_state(ServerState::Leader);
 
@@ -476,21 +588,12 @@ impl RaftNode {
         self.votes_received.clear();
 
         // Initialize next_index and match_index for all followers
-        let next_index = self.log.last_index().unwrap_or(0) + 1;
-
         self.next_index.clear();
         self.match_index.clear();
 
         for node in self.config.get_other_nodes() {
             self.next_index.insert(node.node_id, next_index);
             self.match_index.insert(node.node_id, 0);
-        }
-
-        // Send initial heartbeat/NoOp entry to establish leadership
-        let noop_entry =
-            LogEntry::new_with_type(self.state.get_current_term(), 0, EntryType::NoOp, vec![]);
-        if let Err(_) = self.log.append_entry(noop_entry) {
-            // Log append failed, but we're still leader
         }
 
         // A single-node cluster is itself a quorum. There are no follower
@@ -504,14 +607,15 @@ impl RaftNode {
             "👑 Node {} became LEADER for term {}",
             node_id, current_term
         );
+        true
     }
 
     /// Creates AppendEntries requests for all followers (leader only)
     /// Automatically determines whether to send log entries or heartbeats based on each follower's state:
     /// - If follower's next_index <= leader's last_log_index: sends log entries (replication)
     /// - If follower's next_index > leader's last_log_index: sends empty entries (heartbeat)
-    pub fn create_append_entries_requests(&self) -> Vec<(NodeId, AppendEntriesRequest)> {
-        if self.state.get_server_state() != ServerState::Leader {
+    pub fn build_replication_requests(&self) -> Vec<(NodeId, AppendEntriesRequest)> {
+        if self.stopped || self.state.get_server_state() != ServerState::Leader {
             return vec![];
         }
 
@@ -537,14 +641,12 @@ impl RaftNode {
 
             if next_idx <= last_log_index {
                 // Follower is behind: send log entries for replication
-                let batch_size = 50; // Configurable batch size to avoid huge messages
+                let batch_size = self.config.max_entries_per_query.max(1) as u64;
                 let end_index = std::cmp::min(next_idx + batch_size - 1, last_log_index);
-
-                for i in next_idx..=end_index {
-                    if let Some(entry) = self.log.get_entry(i) {
-                        entries.push(entry);
-                    }
-                }
+                entries = self
+                    .log
+                    .get_entries(next_idx, end_index)
+                    .unwrap_or_default();
             }
             // If next_idx > last_log_index: follower is up-to-date, entries remains empty (heartbeat)
 
@@ -563,18 +665,23 @@ impl RaftNode {
         requests
     }
 
+    /// Backwards-compatible name for the mixed heartbeat/replication builder.
+    pub fn create_append_entries_requests(&self) -> Vec<(NodeId, AppendEntriesRequest)> {
+        self.build_replication_requests()
+    }
+
     /// Creates heartbeat requests for all followers (leader only)
     /// This is an alias for create_append_entries_requests() - the method automatically
     /// sends heartbeats (empty entries) to followers who are up-to-date
     pub fn create_heartbeats(&self) -> Vec<(NodeId, AppendEntriesRequest)> {
-        self.create_append_entries_requests()
+        self.build_replication_requests()
     }
 
     /// Creates log replication requests for all followers (leader only)
     /// This is an alias for create_append_entries_requests() - the method automatically
     /// sends log entries to followers who are behind
     pub fn create_replication_requests(&self) -> Vec<(NodeId, AppendEntriesRequest)> {
-        self.create_append_entries_requests()
+        self.build_replication_requests()
     }
 
     /// Handles AppendEntries response from a follower (leader only)
@@ -584,7 +691,10 @@ impl RaftNode {
         request: &AppendEntriesRequest,
         response: AppendEntriesResponse,
     ) -> bool {
-        if self.state.get_server_state() != ServerState::Leader {
+        if self.stopped
+            || !self.is_other_voter(from_node)
+            || self.state.get_server_state() != ServerState::Leader
+        {
             return false;
         }
 
@@ -609,21 +719,33 @@ impl RaftNode {
         if response.success {
             // Success: update next_index and match_index
             let new_match_index = request.prev_log_index + request.entries.len() as u64;
-            self.match_index.insert(from_node, new_match_index);
-            self.next_index.insert(from_node, new_match_index + 1);
+            let old_match = self.match_index.get(&from_node).copied().unwrap_or(0);
+            let old_next = self.next_index.get(&from_node).copied().unwrap_or(1);
+            let match_index = old_match.max(new_match_index);
+            self.match_index.insert(from_node, match_index);
+            self.next_index
+                .insert(from_node, old_next.max(match_index.saturating_add(1)));
 
             // Try to advance commit index
             self.try_advance_commit_index();
             true
         } else {
-            // Failure: decrement next_index and retry
+            // Failure: jump to the follower's reported end when available,
+            // but never below an index already known replicated.
             let current_next = self.next_index.get(&from_node).copied().unwrap_or(1);
-            let new_next = if current_next > 1 {
+            let fallback = if current_next > 1 {
                 current_next - 1
             } else {
                 1
             };
-            self.next_index.insert(from_node, new_next);
+            let hinted = response
+                .last_log_index
+                .and_then(|index| index.checked_add(1))
+                .map(|index| index.min(current_next))
+                .unwrap_or(fallback);
+            let known_match = self.match_index.get(&from_node).copied().unwrap_or(0);
+            self.next_index
+                .insert(from_node, hinted.max(known_match.saturating_add(1)));
             false
         }
     }
@@ -669,7 +791,7 @@ impl RaftNode {
         &mut self,
         payload: Vec<u8>,
     ) -> Result<u64, Box<dyn std::error::Error>> {
-        if self.state.get_server_state() != ServerState::Leader {
+        if self.stopped || self.state.get_server_state() != ServerState::Leader {
             return Err("Only leader can append entries".into());
         }
 
@@ -680,7 +802,10 @@ impl RaftNode {
             payload,
         );
 
-        self.log.append_entry(entry)?;
+        if let Err(error) = self.log.append_entry(entry) {
+            self.stop();
+            return Err(Box::new(error));
+        }
         // As above, a one-node leader needs no replication response to establish
         // majority durability.
         if self.config.majority_size() == 1 {
@@ -819,6 +944,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_voter_ids_before_they_change_protocol_state() {
+        let (mut node, _temp_dir) = create_test_node(1);
+
+        let invalid_vote = node.handle_request_vote(RequestVoteRequest::new(7, 99, 0, 0));
+        assert!(!invalid_vote.vote_granted);
+        assert_eq!(node.get_current_term(), 0);
+
+        let invalid_append =
+            node.handle_append_entries(AppendEntriesRequest::heartbeat(8, 99, 0, 0, 0));
+        assert!(!invalid_append.success);
+        assert_eq!(node.get_current_term(), 0);
+
+        let request = node.create_vote_request().unwrap();
+        assert!(!node.handle_vote_response(99, RequestVoteResponse::grant_vote(request.term)));
+        assert_eq!(node.get_server_state(), ServerState::Candidate);
+        assert_eq!(node.get_vote_count(), 1);
+    }
+
+    #[test]
     fn test_state_machine_applies_normal_entries_only() {
         let (mut node, _temp_dir) = create_test_node(1);
         let applied = Arc::new(Mutex::new(Vec::new()));
@@ -839,6 +983,19 @@ mod tests {
         assert!(node.handle_append_entries(request).success);
         assert_eq!(node.get_state().last_applied, 2);
         assert_eq!(*applied.lock().unwrap(), vec![b"command".to_vec()]);
+    }
+
+    #[test]
+    fn missing_committed_entry_stops_node_and_prevents_success_reply() {
+        let (mut node, _temp_dir) = create_test_node(1);
+        node.state.set_commit_index(1);
+
+        node.apply_committed_entries();
+
+        assert!(node.is_stopped());
+        assert_eq!(node.get_state().last_applied, 0);
+        let response = node.finish_append_entries(0, false, false, 1, true);
+        assert!(!response.success);
     }
 
     #[test]
@@ -884,8 +1041,8 @@ mod tests {
         let vote_request = node.create_vote_request();
         assert!(vote_request.is_some());
 
-        // Become leader
-        node.become_leader();
+        // A configured peer grants the quorum vote.
+        assert!(node.handle_vote_response(2, RequestVoteResponse::grant_vote(1)));
 
         assert_eq!(node.get_server_state(), ServerState::Leader);
 
@@ -1135,7 +1292,7 @@ mod tests {
         // Make node 1 leader
         let vote_request = leader.create_vote_request();
         assert!(vote_request.is_some());
-        leader.become_leader();
+        assert!(leader.handle_vote_response(2, RequestVoteResponse::grant_vote(1)));
 
         // Leader appends some entries
         let entry_index1 = leader
@@ -1187,7 +1344,7 @@ mod tests {
         // Make node 1 leader
         let vote_request = leader.create_vote_request();
         assert!(vote_request.is_some());
-        leader.become_leader();
+        assert!(leader.handle_vote_response(2, RequestVoteResponse::grant_vote(1)));
 
         // Leader has entries 1 (NoOp), 2, 3
         leader
@@ -1196,6 +1353,13 @@ mod tests {
         leader
             .append_new_entry("command2".as_bytes().to_vec())
             .expect("Failed to append");
+
+        // Give the follower a known suffix end so its failure response can
+        // exercise the last_log_index jump rather than the fallback path.
+        follower
+            .log
+            .append_entry(LogEntry::new_with_type(1, 0, EntryType::NoOp, vec![]))
+            .expect("seed follower log");
 
         // Manually set next_index to simulate follower being far behind
         leader.next_index.insert(2, 5); // Trying to send from index 5, but follower only has 0 entries
@@ -1208,16 +1372,16 @@ mod tests {
         let response = follower.handle_append_entries(request.clone());
         assert!(!response.success);
 
-        // Leader handles failure and decrements next_index
+        // Leader uses the follower's last-index hint to jump to index 2.
         let success = leader.handle_append_entries_response(2, request, response);
         assert!(!success);
 
-        // Check that next_index was decremented
+        // Check that next_index used the hint.
         let status = leader.get_replication_status();
-        assert_eq!(status.get(&2), Some(&(4, 0))); // next_index decremented from 5 to 4
+        assert_eq!(status.get(&2), Some(&(2, 0)));
 
-        // Continue decrementing until we find the right index
-        for _ in 0..4 {
+        // Retry from the hinted index.
+        for _ in 0..1 {
             let retry_requests = leader.create_append_entries_requests();
             let (_, retry_request) = &retry_requests[0];
             let retry_response = follower.handle_append_entries(retry_request.clone());
@@ -1235,13 +1399,49 @@ mod tests {
     }
 
     #[test]
+    fn stale_append_responses_do_not_regress_known_peer_progress() {
+        let (mut leader, _temp_dir) = create_test_node(1);
+        assert!(leader.create_vote_request().is_some());
+        assert!(leader.handle_vote_response(2, RequestVoteResponse::grant_vote(1)));
+        leader.append_new_entry(b"command".to_vec()).unwrap();
+
+        let request = leader
+            .build_replication_requests()
+            .into_iter()
+            .find(|(id, _)| *id == 2)
+            .unwrap()
+            .1;
+        assert!(leader.handle_append_entries_response(
+            2,
+            &request,
+            AppendEntriesResponse::success(1, Some(2)),
+        ));
+        assert_eq!(leader.get_replication_status().get(&2), Some(&(3, 2)));
+
+        // A duplicated response to an older, shorter request cannot undo the
+        // acknowledged range; neither can its delayed failure hint.
+        let old_request = AppendEntriesRequest::heartbeat(1, 1, 0, 0, 0);
+        assert!(leader.handle_append_entries_response(
+            2,
+            &old_request,
+            AppendEntriesResponse::success(1, Some(0)),
+        ));
+        assert!(!leader.handle_append_entries_response(
+            2,
+            &old_request,
+            AppendEntriesResponse::failure(1, Some(0)),
+        ));
+        assert_eq!(leader.get_replication_status().get(&2), Some(&(3, 2)));
+    }
+
+    #[test]
     fn test_natural_append_entries_behavior() {
         let (mut leader, _temp1) = create_test_node(1);
 
         // Make node 1 leader
         let vote_request = leader.create_vote_request();
         assert!(vote_request.is_some());
-        leader.become_leader();
+        assert!(leader.handle_vote_response(2, RequestVoteResponse::grant_vote(1)));
 
         // When we become leader, a NoOp entry is automatically appended
         // So followers are immediately behind and need the NoOp entry

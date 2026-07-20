@@ -32,6 +32,46 @@ pub struct LogFileSegment {
 }
 
 impl LogFileSegment {
+    /// Validates the fixed segment header before recovery accepts this file.
+    pub fn validate_header(&self) -> bool {
+        if MemoryMapUtil::read_vec_8(&self.buffer, MAGIC_OFFSET, 4) != b"RAFT"
+            || MemoryMapUtil::read_u32(&self.buffer, VERSION_OFFSET) != 1
+            || self.get_base_index() == 0
+        {
+            return false;
+        }
+
+        let append_position = self.get_start_append_position() as usize;
+        if append_position < HEADER_SIZE || append_position > self.buffer.len() {
+            return false;
+        }
+
+        // The entry count and append position are also header fields. Validate
+        // their relationship before recovery trusts either one.
+        let mut position = HEADER_SIZE;
+        for _ in 0..self.get_entry_count() {
+            let Some(size_end) = position.checked_add(8) else {
+                return false;
+            };
+            if size_end > append_position {
+                return false;
+            }
+            let mut size_bytes = [0; 8];
+            size_bytes.copy_from_slice(&self.buffer[position..size_end]);
+            let entry_size = u64::from_le_bytes(size_bytes) as usize;
+            if entry_size < 25 {
+                return false;
+            }
+            let Some(next_position) = position.checked_add(entry_size) else {
+                return false;
+            };
+            if next_position > append_position {
+                return false;
+            }
+            position = next_position;
+        }
+        position == append_position
+    }
     /// Flush this segment's mmap to stable storage.
     pub fn flush(&mut self) -> io::Result<()> {
         MemoryMapUtil::flush(&mut self.buffer)
