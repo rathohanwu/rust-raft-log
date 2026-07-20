@@ -1,10 +1,7 @@
-use tokio::time::{sleep, Duration, timeout};
 use tempfile::TempDir;
+use tokio::time::{sleep, timeout, Duration};
 
-use raft_log::{
-    ClusterConfig, NodeInfo, RaftNode,
-    RaftGrpcServer, ServerState
-};
+use raft_log::{ClusterConfig, NodeInfo, RaftGrpcServer, RaftNode, ServerState};
 
 /// Integration test that starts three real servers and waits for leader election
 #[tokio::test]
@@ -27,10 +24,16 @@ async fn test_three_server_leader_election() {
 
     // Create cluster configurations for each node with fast timing for testing
     let config1 = ClusterConfig::new(
-        1, nodes.clone(),
+        1,
+        nodes.clone(),
         temp_dir1.path().join("logs").to_string_lossy().to_string(),
-        temp_dir1.path().join("raft_state.meta").to_string_lossy().to_string(),
-        1024 * 1024, 100,
+        temp_dir1
+            .path()
+            .join("raft_state.meta")
+            .to_string_lossy()
+            .to_string(),
+        1024 * 1024,
+        100,
         (500, 1500), // Wider range to prevent split votes
         100,         // Fast heartbeat for testing
     );
@@ -39,8 +42,13 @@ async fn test_three_server_leader_election() {
         2,
         nodes.clone(),
         temp_dir2.path().join("logs").to_string_lossy().to_string(),
-        temp_dir2.path().join("raft_state.meta").to_string_lossy().to_string(),
-        1024 * 1024, 100,
+        temp_dir2
+            .path()
+            .join("raft_state.meta")
+            .to_string_lossy()
+            .to_string(),
+        1024 * 1024,
+        100,
         (500, 1500), // Wider range to prevent split votes
         100,         // Fast heartbeat for testing
     );
@@ -49,8 +57,13 @@ async fn test_three_server_leader_election() {
         3,
         nodes.clone(),
         temp_dir3.path().join("logs").to_string_lossy().to_string(),
-        temp_dir3.path().join("raft_state.meta").to_string_lossy().to_string(),
-        1024 * 1024, 100,
+        temp_dir3
+            .path()
+            .join("raft_state.meta")
+            .to_string_lossy()
+            .to_string(),
+        1024 * 1024,
+        100,
         (500, 1500), // Wider range to prevent split votes
         100,         // Fast heartbeat for testing
     );
@@ -75,11 +88,17 @@ async fn test_three_server_leader_election() {
     let server3_raft = server3.get_raft_node();
 
     // Start servers with event loops
-    let (event_loop1, server_handle1) = server1.start_with_handles().await
+    let (event_loop1, server_handle1) = server1
+        .start_with_handles()
+        .await
         .expect("Failed to start server 1");
-    let (event_loop2, server_handle2) = server2.start_with_handles().await
+    let (event_loop2, server_handle2) = server2
+        .start_with_handles()
+        .await
         .expect("Failed to start server 2");
-    let (event_loop3, server_handle3) = server3.start_with_handles().await
+    let (event_loop3, server_handle3) = server3
+        .start_with_handles()
+        .await
         .expect("Failed to start server 3");
 
     println!("🌐 Started 3 gRPC servers on ports 18001, 18002, 18003");
@@ -92,11 +111,11 @@ async fn test_three_server_leader_election() {
         let node1 = server1_raft.lock().unwrap();
         let node2 = server2_raft.lock().unwrap();
         let node3 = server3_raft.lock().unwrap();
-        
+
         assert_eq!(node1.get_server_state(), ServerState::Follower);
         assert_eq!(node2.get_server_state(), ServerState::Follower);
         assert_eq!(node3.get_server_state(), ServerState::Follower);
-        
+
         assert_eq!(node1.get_current_term(), 0);
         assert_eq!(node2.get_current_term(), 0);
         assert_eq!(node3.get_current_term(), 0);
@@ -111,7 +130,8 @@ async fn test_three_server_leader_election() {
             (3, server3_raft.lock().unwrap()),
         ];
 
-        let leaders: Vec<(u32, u64)> = states.iter()
+        let leaders: Vec<(u32, u64)> = states
+            .iter()
             .filter_map(|(id, node)| {
                 if node.get_server_state() == ServerState::Leader {
                     Some((*id, node.get_current_term()))
@@ -136,15 +156,19 @@ async fn test_three_server_leader_election() {
             sleep(Duration::from_millis(200)).await;
 
             if let Some((leader_id, leader_term)) = check_for_leader() {
-                println!("👑 Leader found: Node {} in term {}", leader_id, leader_term);
+                println!(
+                    "👑 Leader found: Node {} in term {}",
+                    leader_id, leader_term
+                );
                 return (leader_id, leader_term);
             }
         }
-    }).await;
+    })
+    .await;
 
     // Verify election succeeded
-    let (leader_id, leader_term) = election_result
-        .expect("Leader election timed out after 10 seconds");
+    let (leader_id, leader_term) =
+        election_result.expect("Leader election timed out after 10 seconds");
 
     println!("🎉 Leader election completed successfully!");
     println!("   - Leader: Node {}", leader_id);
@@ -156,15 +180,21 @@ async fn test_three_server_leader_election() {
 
     // Verify leader is still the same
     if let Some((current_leader_id, current_leader_term)) = check_for_leader() {
-        assert_eq!(current_leader_id, leader_id, "Leader should remain the same");
-        println!("✅ Cluster is stable - Leader: Node {} in term {}", current_leader_id, current_leader_term);
+        assert_eq!(
+            current_leader_id, leader_id,
+            "Leader should remain the same"
+        );
+        println!(
+            "✅ Cluster is stable - Leader: Node {} in term {}",
+            current_leader_id, current_leader_term
+        );
     } else {
         panic!("Leader disappeared after election!");
     }
 
     // Graceful shutdown
     println!("🛑 Shutting down servers...");
-    
+
     server1.shutdown();
     server2.shutdown();
     server3.shutdown();

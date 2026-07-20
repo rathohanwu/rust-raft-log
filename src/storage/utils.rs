@@ -1,9 +1,9 @@
 use byteorder::{LittleEndian, ReadBytesExt};
+use log::error;
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::{Error, Write};
-use log::error;
 
 pub fn create_memory_mapped_file(file_path: &str, size: u64) -> Result<MmapMut, Error> {
     let file = OpenOptions::new()

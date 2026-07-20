@@ -11,8 +11,8 @@ use crate::models::types_proto::{
     ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest, ProtoRequestVoteRequest,
 };
 use crate::models::{
-    AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, NodeId,
-    RequestVoteRequest, RequestVoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, NodeId, RequestVoteRequest,
+    RequestVoteResponse,
 };
 
 const RAFT_RPC_TIMEOUT: Duration = Duration::from_millis(500);

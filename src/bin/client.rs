@@ -1,13 +1,10 @@
 use clap::Parser;
+use log::{debug, error, info, warn};
 use std::process;
 use std::time::Duration;
 use tokio::time::sleep;
-use log::{info, error, warn, debug};
 
-use raft_log::{
-    YamlClusterConfig, RaftGrpcClient,
-    NodeId, ClusterConfig,
-};
+use raft_log::{ClusterConfig, NodeId, RaftGrpcClient, YamlClusterConfig};
 
 #[derive(Parser)]
 #[command(name = "raft-client")]
@@ -48,15 +45,22 @@ async fn main() {
     let yaml_config = match YamlClusterConfig::from_file(&args.config) {
         Ok(config) => config,
         Err(e) => {
-            error!("❌ Failed to load configuration file '{}': {}", args.config, e);
+            error!(
+                "❌ Failed to load configuration file '{}': {}",
+                args.config, e
+            );
             process::exit(1);
         }
     };
 
-    info!("📋 Loaded cluster configuration with {} nodes", yaml_config.nodes.len());
+    info!(
+        "📋 Loaded cluster configuration with {} nodes",
+        yaml_config.nodes.len()
+    );
 
     // Create gRPC client
-    let cluster_config = match yaml_config.to_cluster_config(1) { // Use node 1 as dummy for client
+    let cluster_config = match yaml_config.to_cluster_config(1) {
+        // Use node 1 as dummy for client
         Ok(config) => config,
         Err(e) => {
             error!("❌ Failed to create cluster configuration: {}", e);
@@ -92,14 +96,19 @@ async fn main() {
         initial_target,
         args.max_retries,
         args.retry_delay_ms,
-    ).await {
+    )
+    .await
+    {
         Ok((leader_id, index)) => {
             info!("✅ Successfully appended log entry!");
             info!("   Leader: Node {}", leader_id);
             info!("   Log index: {}", index);
         }
         Err(e) => {
-            error!("❌ Failed to append log entry after {} retries: {}", args.max_retries, e);
+            error!(
+                "❌ Failed to append log entry after {} retries: {}",
+                args.max_retries, e
+            );
             process::exit(1);
         }
     }
@@ -123,10 +132,16 @@ async fn send_log_entry_with_retry(
         match client.client_request(current_target, payload.clone()).await {
             Ok(response) => {
                 if response.success {
-                    info!("✅ Node {} accepted the entry (it's the leader!)", current_target);
+                    info!(
+                        "✅ Node {} accepted the entry (it's the leader!)",
+                        current_target
+                    );
                     return Ok((current_target, response.log_index));
                 } else {
-                    warn!("❌ Node {} rejected the entry: {}", current_target, response.error_message);
+                    warn!(
+                        "❌ Node {} rejected the entry: {}",
+                        current_target, response.error_message
+                    );
 
                     // Mark current node as tried
                     tried_nodes.insert(current_target);
@@ -134,9 +149,14 @@ async fn send_log_entry_with_retry(
                     // If the response includes a leader hint, prioritize trying that node
                     if response.leader_id != 0 {
                         // Check if the suggested leader is valid and different from current
-                        if cluster_config.get_node(response.leader_id).is_some() && response.leader_id != current_target {
+                        if cluster_config.get_node(response.leader_id).is_some()
+                            && response.leader_id != current_target
+                        {
                             current_target = response.leader_id;
-                            debug!("🎯 Server suggested leader is node {}, trying immediately", current_target);
+                            debug!(
+                                "🎯 Server suggested leader is node {}, trying immediately",
+                                current_target
+                            );
 
                             // Don't wait for retry delay when we have a leader hint - try immediately
                             continue;
@@ -198,5 +218,9 @@ fn find_next_node_to_try(
     }
 
     // All nodes have been tried
-    Err(format!("All {} nodes in the cluster have been tried", cluster_config.nodes.len()).into())
+    Err(format!(
+        "All {} nodes in the cluster have been tried",
+        cluster_config.nodes.len()
+    )
+    .into())
 }

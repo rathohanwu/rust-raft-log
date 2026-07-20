@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Type of log entry for Raft consensus
 #[derive(Debug, Clone, PartialEq)]
@@ -215,7 +215,10 @@ impl YamlClusterConfig {
     }
 
     /// Convert to ClusterConfig for a specific node
-    pub fn to_cluster_config(&self, node_id: NodeId) -> Result<ClusterConfig, Box<dyn std::error::Error>> {
+    pub fn to_cluster_config(
+        &self,
+        node_id: NodeId,
+    ) -> Result<ClusterConfig, Box<dyn std::error::Error>> {
         let nodes: Vec<NodeInfo> = self.nodes.iter().map(|n| n.clone().into()).collect();
 
         // Verify the node_id exists in the configuration
@@ -224,7 +227,10 @@ impl YamlClusterConfig {
         }
 
         let settings = &self.cluster_settings;
-        let meta_file_path = format!("{}/node_{}/raft_state.meta", settings.log_directory, node_id);
+        let meta_file_path = format!(
+            "{}/node_{}/raft_state.meta",
+            settings.log_directory, node_id
+        );
         let log_directory = format!("{}/node_{}", settings.log_directory, node_id);
 
         Ok(ClusterConfig::new(
@@ -234,7 +240,10 @@ impl YamlClusterConfig {
             meta_file_path,
             settings.log_segment_size,
             settings.max_entries_per_query,
-            (settings.election_timeout_range.min, settings.election_timeout_range.max),
+            (
+                settings.election_timeout_range.min,
+                settings.election_timeout_range.max,
+            ),
             settings.heartbeat_interval,
         ))
     }
@@ -328,9 +337,11 @@ impl ClusterConfig {
 
     /// Creates a single-node test configuration (for simple tests)
     pub fn test_config(node_id: NodeId) -> Self {
-        let nodes = vec![
-            NodeInfo::new(node_id, "127.0.0.1".to_string(), 8000 + node_id as u16),
-        ];
+        let nodes = vec![NodeInfo::new(
+            node_id,
+            "127.0.0.1".to_string(),
+            8000 + node_id as u16,
+        )];
 
         Self::new(
             node_id,
@@ -360,7 +371,10 @@ impl ClusterConfig {
 
     /// Gets all other nodes in the cluster (excluding this node)
     pub fn get_other_nodes(&self) -> Vec<&NodeInfo> {
-        self.nodes.iter().filter(|node| node.node_id != self.node_id).collect()
+        self.nodes
+            .iter()
+            .filter(|node| node.node_id != self.node_id)
+            .collect()
     }
 
     /// Gets all nodes in the cluster
@@ -427,7 +441,9 @@ impl std::fmt::Display for RaftLogError {
             RaftLogError::DirectoryError(msg) => write!(f, "Directory error: {}", msg),
             RaftLogError::SegmentFileError(msg) => write!(f, "Segment file error: {}", msg),
             RaftLogError::InvalidIndex(index) => write!(f, "Invalid index: {}", index),
-            RaftLogError::TooManyEntriesRequested(count) => write!(f, "Too many entries requested: {}", count),
+            RaftLogError::TooManyEntriesRequested(count) => {
+                write!(f, "Too many entries requested: {}", count)
+            }
             RaftLogError::EmptyLog => write!(f, "Empty log"),
             RaftLogError::CorruptedSegment(msg) => write!(f, "Corrupted segment: {}", msg),
         }
@@ -534,8 +550,17 @@ mod tests {
         let cluster_config = ClusterConfig::test_cluster_config(1);
         let raft_log_config = cluster_config.to_raft_log_config();
 
-        assert_eq!(raft_log_config.log_directory.to_string_lossy(), cluster_config.log_directory);
-        assert_eq!(raft_log_config.segment_size, cluster_config.log_segment_size);
-        assert_eq!(raft_log_config.max_entries_per_query, cluster_config.max_entries_per_query);
+        assert_eq!(
+            raft_log_config.log_directory.to_string_lossy(),
+            cluster_config.log_directory
+        );
+        assert_eq!(
+            raft_log_config.segment_size,
+            cluster_config.log_segment_size
+        );
+        assert_eq!(
+            raft_log_config.max_entries_per_query,
+            cluster_config.max_entries_per_query
+        );
     }
 }

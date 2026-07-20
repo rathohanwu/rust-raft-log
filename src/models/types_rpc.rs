@@ -1,4 +1,4 @@
-use crate::models::{NodeId, LogEntry};
+use crate::models::{LogEntry, NodeId};
 
 /// RequestVote RPC - Invoked by candidates to gather votes
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +81,13 @@ impl AppendEntriesRequest {
     }
 
     /// Creates a heartbeat (empty AppendEntries) request
-    pub fn heartbeat(term: u64, leader_id: NodeId, prev_log_index: u64, prev_log_term: u64, leader_commit: u64) -> Self {
+    pub fn heartbeat(
+        term: u64,
+        leader_id: NodeId,
+        prev_log_index: u64,
+        prev_log_term: u64,
+        leader_commit: u64,
+    ) -> Self {
         AppendEntriesRequest {
             term,
             leader_id,

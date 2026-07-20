@@ -7,12 +7,12 @@ use tonic::{Request, Response, Status};
 
 use super::event_loop::RaftEventLoop;
 use super::proto::raft_service_server::RaftService;
+use crate::consensus::RaftNode;
 use crate::models::types_proto::{
     ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest,
     ProtoAppendEntriesResponse, ProtoRequestVoteRequest, ProtoRequestVoteResponse,
 };
 use crate::ServerState;
-use crate::consensus::RaftNode;
 
 /// gRPC service implementation that wraps RaftNode
 pub struct RaftGrpcService {
