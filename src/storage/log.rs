@@ -1122,7 +1122,7 @@ mod tests {
         let entry2 = raft_log.get_entry(2).expect("Should get entry 2");
         assert_eq!(entry2.entry_type, EntryType::NoOp);
         assert_eq!(entry2.term, 1);
-        assert_eq!(entry2.payload, vec![]);
+        assert_eq!(entry2.payload, Vec::<u8>::new());
 
         let entry3 = raft_log.get_entry(3).expect("Should get entry 3");
         assert_eq!(entry3.entry_type, EntryType::Normal);

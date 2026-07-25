@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(retrieved_noop.entry_type, EntryType::NoOp);
         assert_eq!(retrieved_noop.term, 1);
         assert_eq!(retrieved_noop.index, 2);
-        assert_eq!(retrieved_noop.payload, vec![]);
+        assert_eq!(retrieved_noop.payload, Vec::<u8>::new());
 
         assert_eq!(log_segment.get_entry_count(), 2);
     }

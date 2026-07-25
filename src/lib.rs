@@ -14,4 +14,4 @@ pub use consensus::{RaftNode, RaftState, RaftStateSnapshot, StateMachine};
 
 pub use storage::{LogFileSegment, RaftLog};
 
-pub use grpc::{RaftEventLoop, RaftGrpcClient, RaftGrpcServer};
+pub use grpc::{RaftGrpcClient, RaftGrpcServer, RaftNodeView};
