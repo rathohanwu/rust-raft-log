@@ -28,12 +28,12 @@ tokio-stream = { version = "0.1", features = ["net"] }
 # Configuration and CLI
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"
+serde_json = "1.0"
 clap = { version = "4.5.51", features = ["derive"] }
 
 [dev-dependencies]
 # Testing utilities
 tempfile = "3.8"
-serde_json = "1.0"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"
@@ -49,6 +49,14 @@ path = "src/main.rs"
 [[bin]]
 name = "raft-client"
 path = "src/bin/client.rs"
+
+[[bin]]
+name = "raft-node-test"
+path = "src/bin/raft_node_test.rs"
+
+[[bin]]
+name = "raft-state"
+path = "src/bin/state.rs"
 
 [profile.release]
 lto = true

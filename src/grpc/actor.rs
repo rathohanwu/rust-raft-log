@@ -70,6 +70,9 @@ enum Command {
         index: u64,
         response: mpsc::Sender<Option<crate::models::LogEntry>>,
     },
+    QueryAppliedState {
+        response: mpsc::Sender<Option<Vec<u8>>>,
+    },
     LegacyAppend {
         payload: Vec<u8>,
         response: mpsc::Sender<Result<u64, String>>,
@@ -173,6 +176,13 @@ impl RaftHandle {
                 index,
                 response: tx,
             })
+            .ok()?;
+        rx.recv().ok().flatten()
+    }
+    pub fn applied_state(&self) -> Option<Vec<u8>> {
+        let (tx, rx) = mpsc::channel();
+        self.tx
+            .send(Command::QueryAppliedState { response: tx })
             .ok()?;
         rx.recv().ok().flatten()
     }
@@ -361,6 +371,9 @@ impl Actor {
             }
             Command::QueryEntry { index, response } => {
                 let _ = response.send(self.node.get_entry(index));
+            }
+            Command::QueryAppliedState { response } => {
+                let _ = response.send(self.node.get_application_state());
             }
             Command::LegacyAppend { payload, response } => {
                 let result = self

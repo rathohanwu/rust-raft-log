@@ -1,8 +1,9 @@
 use super::actor::RaftHandle;
 use super::proto::raft_service_server::RaftService;
 use crate::models::types_proto::{
-    ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest,
-    ProtoAppendEntriesResponse, ProtoRequestVoteRequest, ProtoRequestVoteResponse,
+    ClientRequestMessage, ClientResponseMessage, GetAppliedStateRequest, GetAppliedStateResponse,
+    ProtoAppendEntriesRequest, ProtoAppendEntriesResponse, ProtoRequestVoteRequest,
+    ProtoRequestVoteResponse,
 };
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -98,6 +99,26 @@ impl RaftService for RaftGrpcService {
                     error_message: "Timed out waiting for the entry to commit".into(),
                 }
             }
+        };
+        Ok(Response::new(response))
+    }
+    async fn get_applied_state(
+        &self,
+        _request: Request<GetAppliedStateRequest>,
+    ) -> Result<Response<GetAppliedStateResponse>, Status> {
+        self.available()?;
+        let last_applied = self.raft.snapshot().last_applied;
+        let response = match self.raft.applied_state() {
+            Some(state_json) => GetAppliedStateResponse {
+                available: true,
+                state_json,
+                last_applied,
+            },
+            None => GetAppliedStateResponse {
+                available: false,
+                state_json: Vec::new(),
+                last_applied,
+            },
         };
         Ok(Response::new(response))
     }

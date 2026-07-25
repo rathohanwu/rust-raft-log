@@ -2,6 +2,8 @@ pub mod consensus;
 pub mod grpc;
 pub mod models;
 pub mod storage;
+#[doc(hidden)]
+pub mod testkit;
 
 // Re-export commonly used types for convenience
 pub use models::{

@@ -1,0 +1,82 @@
+networks:
+  raft-e2e-net:
+    driver: bridge
+
+volumes:
+  data1: {}
+  data2: {}
+  data3: {}
+
+x-node: &node
+  image: rust-raft-log:e2e
+  entrypoint: ["raft-node-test"]
+  networks: [raft-e2e-net]
+  restart: "no"
+  environment:
+    RUST_LOG: ${RUST_LOG:-info}
+
+services:
+  node1:
+    <<: *node
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["--node-id", "1", "--config", "/etc/raft/cluster.docker.yaml"]
+    volumes:
+      - data1:/var/lib/raft
+      - ./config:/etc/raft:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "18001"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+      start_period: 2s
+      # P1 swap: ["CMD", "raft-probe", "127.0.0.1:18001"]
+
+  node2:
+    <<: *node
+    command: ["--node-id", "2", "--config", "/etc/raft/cluster.docker.yaml"]
+    volumes:
+      - data2:/var/lib/raft
+      - ./config:/etc/raft:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "18002"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+      start_period: 2s
+      # P1 swap: ["CMD", "raft-probe", "127.0.0.1:18002"]
+
+  node3:
+    <<: *node
+    command: ["--node-id", "3", "--config", "/etc/raft/cluster.docker.yaml"]
+    volumes:
+      - data3:/var/lib/raft
+      - ./config:/etc/raft:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "18003"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+      start_period: 2s
+      # P1 swap: ["CMD", "raft-probe", "127.0.0.1:18003"]
+
+  raft-client:
+    image: rust-raft-log:e2e
+    networks: [raft-e2e-net]
+    profiles: ["client"]
+    entrypoint: ["raft-client"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - ./config:/etc/raft:ro
+
+  raft-state:
+    image: rust-raft-log:e2e
+    networks: [raft-e2e-net]
+    profiles: ["client"]
+    entrypoint: ["raft-state"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - ./config:/etc/raft:ro
