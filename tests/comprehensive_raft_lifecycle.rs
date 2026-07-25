@@ -172,12 +172,32 @@ async fn test_comprehensive_raft_lifecycle() {
         initial_leader_id, initial_term
     );
 
-    // Verify exactly one leader and two followers
-    let states = [
-        (1, server1_raft.lock().unwrap().get_server_state()),
-        (2, server2_raft.lock().unwrap().get_server_state()),
-        (3, server3_raft.lock().unwrap().get_server_state()),
-    ];
+    // Wait for the leader's first heartbeat to make the election externally
+    // stable. A leader can be visible before the other candidates have handled
+    // its first AppendEntries request.
+    let states = timeout(Duration::from_secs(5), async {
+        loop {
+            let states = [
+                (1, server1_raft.lock().unwrap().get_server_state()),
+                (2, server2_raft.lock().unwrap().get_server_state()),
+                (3, server3_raft.lock().unwrap().get_server_state()),
+            ];
+            let leaders = states
+                .iter()
+                .filter(|(_, state)| *state == ServerState::Leader)
+                .count();
+            let followers = states
+                .iter()
+                .filter(|(_, state)| *state == ServerState::Follower)
+                .count();
+            if leaders == 1 && followers == 2 {
+                break states;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("cluster did not settle after leader election");
 
     let leader_count = states
         .iter()

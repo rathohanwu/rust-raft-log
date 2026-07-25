@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use raft_log::{
     ClusterConfig, EntryType, LogEntry, NodeId, NodeInfo, RaftGrpcClient, RaftGrpcServer, RaftNode,
-    ServerState, StateMachine,
+    RaftNodeView, ServerState, StateMachine,
 };
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -228,7 +228,7 @@ impl TestCluster {
         ids
     }
 
-    pub fn raft(&self, id: NodeId) -> Arc<Mutex<RaftNode>> {
+    pub fn raft(&self, id: NodeId) -> Arc<Mutex<RaftNodeView>> {
         self.runtimes.get(&id).unwrap().server.get_raft_node()
     }
 
