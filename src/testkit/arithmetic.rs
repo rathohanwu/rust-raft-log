@@ -74,10 +74,6 @@ impl StateMachine for ArithmeticStateMachine {
             self.state.value
         );
     }
-
-    fn state_snapshot(&self) -> Option<Vec<u8>> {
-        serde_json::to_vec(&self.state).ok()
-    }
 }
 
 #[cfg(test)]

@@ -70,13 +70,3 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ./config:/etc/raft:ro
-
-  raft-state:
-    image: rust-raft-log:e2e
-    networks: [raft-e2e-net]
-    profiles: ["client"]
-    entrypoint: ["raft-state"]
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-    volumes:
-      - ./config:/etc/raft:ro

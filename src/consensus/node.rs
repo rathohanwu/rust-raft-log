@@ -14,12 +14,6 @@ use std::collections::{HashMap, HashSet};
 /// so they must be fast and must not perform blocking I/O.
 pub trait StateMachine: Send {
     fn apply(&mut self, entry: &LogEntry);
-
-    /// Returns a serializable application-defined snapshot for test and debug
-    /// observation. Production users can leave the default `None`.
-    fn state_snapshot(&self) -> Option<Vec<u8>> {
-        None
-    }
 }
 
 /// Core Raft node that implements the Raft consensus algorithm
@@ -163,14 +157,6 @@ impl RaftNode {
     /// Gets a log entry at the specified index
     pub fn get_entry(&self, index: u64) -> Option<LogEntry> {
         self.log.get_entry(index)
-    }
-
-    /// Returns an application-defined state-machine snapshot when one is
-    /// embedded in this node.
-    pub fn get_application_state(&self) -> Option<Vec<u8>> {
-        self.state_machine
-            .as_ref()
-            .and_then(|state_machine| state_machine.state_snapshot())
     }
 
     /// Raft cannot safely turn a persistence failure into a normal protocol

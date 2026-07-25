@@ -17,7 +17,7 @@ async fn e2e_full_crash_recovery_offline_and_noop_reapply() {
         .await;
     let mut before = Vec::new();
     for id in cluster.node_ids() {
-        let node = cluster.raft(id);
+        let node = cluster.node_view(id);
         let node = node.lock().unwrap();
         before.push((
             id,
@@ -54,7 +54,7 @@ async fn e2e_full_crash_recovery_offline_and_noop_reapply() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let ready = cluster.active_node_ids().into_iter().all(|id| {
-            let node = cluster.raft(id);
+            let node = cluster.node_view(id);
             let node = node.lock().unwrap();
             node.get_state().commit_index > committed.len() as u64
                 && node.get_state().last_applied == node.get_state().commit_index

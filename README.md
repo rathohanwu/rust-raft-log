@@ -130,7 +130,7 @@ impl StateMachine for Counter {
 let node = RaftNode::new_with_state_machine(config, Box::new(Counter(0)))?;
 \`\`\`
 
-Only committed \`Normal\` entries invoke \`apply\`; Raft \`NoOp\` entries still advance \`last_applied\`. \`state_snapshot\` is an optional observability hook. The Docker-only \`raft-node-test\` binary embeds the repository's arithmetic state machine, and \`raft-state\` queries its JSON state through the debug \`GetAppliedState\` RPC.
+Only committed \`Normal\` entries invoke \`apply\`; Raft \`NoOp\` entries still advance \`last_applied\`. The Docker-only \`raft-node-test\` binary embeds the repository's arithmetic state machine.
 
 ## gRPC API
 
@@ -141,7 +141,6 @@ The service definition is [proto/raft.proto](proto/raft.proto).
 | \`RequestVote\` | Candidates request votes for an election term. |
 | \`AppendEntries\` | Leaders send heartbeats or replicate entries; followers return success and their log end. |
 | \`ClientRequest\` | Clients submit one raw command payload; success means the entry committed. |
-| \`GetAppliedState\` | Debug/test-only read of an embedded state machine; unavailable on the production node binary. |
 
 ## Tests and Docker workflow
 
@@ -161,10 +160,9 @@ cargo test --test e2e_two_node -- --ignored
 # Docker checks (requires Docker)
 make e2e-docker
 make e2e-docker-failover
-make e2e-docker-recovery
 \`\`\`
 
-For interactive Docker cluster commands, failover observation, retained-volume recovery, and cleanup, see the [Docker cluster playbook](docs/docker_cluster_playbook.md).
+For interactive Docker cluster commands and cleanup, see the scripts in `scripts/`.
 
 ## Repository map
 

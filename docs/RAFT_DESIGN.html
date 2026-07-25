@@ -180,7 +180,7 @@ flowchart LR
     </article>
     <article class="design-card events">
       <h3>Observation</h3>
-      <p><code>state_snapshot</code> is optional. <code>GetAppliedState</code> is a test/debug RPC and is unavailable on the production binary without an embedded machine.</p>
+      <p>Application state remains owned by the embedding state machine; Raft persists only protocol state and the log.</p>
     </article>
   </div>
   </section>

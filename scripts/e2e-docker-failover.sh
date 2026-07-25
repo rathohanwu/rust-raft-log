@@ -19,25 +19,6 @@ cleanup() {
   exit "$status"
 }
 
-query_state() {
-  "${COMPOSE[@]}" run --rm --no-deps raft-state \
-    --config /etc/raft/cluster.docker.yaml \
-    --node-id "$1"
-}
-
-all_nodes_have_value() {
-  local expected=$1
-  local node_id
-  local output
-
-  for node_id in 1 2 3; do
-    output=$(query_state "$node_id")
-    printf '%s\n' "$output"
-    printf '%s' "$output" | grep -q "\"value\":$expected"
-    printf '%s' "$output" | grep -q "\"applied_commands\":$expected"
-  done
-}
-
 trap cleanup EXIT
 mkdir -p "$BUILDX_CONFIG"
 
@@ -47,14 +28,13 @@ echo "Building arithmetic-state Docker test node..."
 echo "Starting Raft nodes..."
 "${COMPOSE[@]}" up -d --wait node1 node2 node3
 
-echo "Writing add(1) and verifying every node reports value=1..."
+echo "Writing add(1)..."
 first_write=$("${COMPOSE[@]}" run --rm --no-deps raft-client \
   --config /etc/raft/cluster.docker.yaml \
   --payload '{"action":"add","value":1}' 2>&1)
 printf '%s\n' "$first_write"
 leader=$(printf '%s\n' "$first_write" | sed -n 's/.*Leader: Node \([0-9][0-9]*\).*/\1/p' | tail -1)
 test -n "$leader"
-all_nodes_have_value 1
 
 echo "Stopping leader node$leader and writing add(1) through the new leader..."
 "${COMPOSE[@]}" stop "node$leader"
@@ -76,14 +56,4 @@ echo "Restarting node$leader and writing add(1) to drive catch-up..."
   --max-retries 15 \
   --retry-delay-ms 500
 
-echo "Waiting for all three state machines to converge on value=3..."
-deadline=$((SECONDS + 15))
-until all_nodes_have_value 3; do
-  if (( SECONDS >= deadline )); then
-    echo "Timed out waiting for arithmetic state convergence" >&2
-    exit 1
-  fi
-  sleep 1
-done
-
-echo "Docker failover and state-machine verification passed (project: $PROJECT)."
+echo "Docker failover write verification passed (project: $PROJECT)."

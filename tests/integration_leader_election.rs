@@ -83,23 +83,23 @@ async fn test_three_server_leader_election() {
     println!("✅ Created gRPC servers with fast timing for testing");
 
     // Get references for monitoring
-    let server1_raft = server1.get_raft_node();
-    let server2_raft = server2.get_raft_node();
-    let server3_raft = server3.get_raft_node();
+    let server1_node_view = server1.node_view();
+    let server2_node_view = server2.node_view();
+    let server3_node_view = server3.node_view();
 
-    // Start servers with event loops
-    let (event_loop1, server_handle1) = server1
-        .start_with_handles()
-        .await
-        .expect("Failed to start server 1");
-    let (event_loop2, server_handle2) = server2
-        .start_with_handles()
-        .await
-        .expect("Failed to start server 2");
-    let (event_loop3, server_handle3) = server3
-        .start_with_handles()
-        .await
-        .expect("Failed to start server 3");
+    // Run each server in the background so this test can drive the cluster.
+    let server_handle1 = tokio::spawn({
+        let server = server1.clone();
+        async move { server.start().await.expect("Failed to start server 1") }
+    });
+    let server_handle2 = tokio::spawn({
+        let server = server2.clone();
+        async move { server.start().await.expect("Failed to start server 2") }
+    });
+    let server_handle3 = tokio::spawn({
+        let server = server3.clone();
+        async move { server.start().await.expect("Failed to start server 3") }
+    });
 
     println!("🌐 Started 3 gRPC servers on ports 18001, 18002, 18003");
 
@@ -108,9 +108,9 @@ async fn test_three_server_leader_election() {
 
     // Verify initial state - all should be followers
     {
-        let node1 = server1_raft.lock().unwrap();
-        let node2 = server2_raft.lock().unwrap();
-        let node3 = server3_raft.lock().unwrap();
+        let node1 = server1_node_view.lock().unwrap();
+        let node2 = server2_node_view.lock().unwrap();
+        let node3 = server3_node_view.lock().unwrap();
 
         assert_eq!(node1.get_server_state(), ServerState::Follower);
         assert_eq!(node2.get_server_state(), ServerState::Follower);
@@ -125,9 +125,9 @@ async fn test_three_server_leader_election() {
     // Simple function to check if there's exactly one leader
     let check_for_leader = || -> Option<(u32, u64)> {
         let states = [
-            (1, server1_raft.lock().unwrap()),
-            (2, server2_raft.lock().unwrap()),
-            (3, server3_raft.lock().unwrap()),
+            (1, server1_node_view.lock().unwrap()),
+            (2, server2_node_view.lock().unwrap()),
+            (3, server3_node_view.lock().unwrap()),
         ];
 
         let leaders: Vec<(u32, u64)> = states
@@ -199,9 +199,6 @@ async fn test_three_server_leader_election() {
     server2.shutdown();
     server3.shutdown();
 
-    event_loop1.abort();
-    event_loop2.abort();
-    event_loop3.abort();
     server_handle1.abort();
     server_handle2.abort();
     server_handle3.abort();

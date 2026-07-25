@@ -167,7 +167,7 @@ appends and commits its current-term NoOp. That commit advances every node from
 volatile `last_applied = 0` through the recovered durable prefix, rebuilding the
 test state machine. This is not an unsafe "apply every log entry on boot": an
 uncommitted suffix remains unapplied until a quorum establishes commitment.
-`make e2e-docker-recovery` proves this with `add(9)`, a full `stop`/`start` with
+The ignored Rust recovery test proves this with `add(9)`, a full `stop`/`start` with
 volumes retained, and all three nodes reporting `value: 9`,
 `applied_commands: 1`, and `last_applied: 3`.
 
@@ -489,7 +489,7 @@ coverage remains narrowed to log-prefix agreement + availability.
 | S2 | **Replication** | none | N writes committed; committed **log prefix** identical on all; **applied state identical (P5a)** |
 | S3 | **Leader failover** | `kill` leader | new leader elected; writes resume; no ack'd write lost |
 | S4 | **Follower crash + rejoin** | `kill` then `start` follower | rejoiner catches up to common committed prefix; **applied state converges (P5a)** |
-| S5 | **Full-cluster restart (recovery)** | `stop` all, `start` all (volumes kept) | pre-restart committed **log prefix** survives; leader re-forms; its current-term NoOp commits the prefix; all P5a state machines rebuild equal applied state. Implemented by `make e2e-docker-recovery`. |
+| S5 | **Full-cluster restart (recovery)** | `stop` all, `start` all (volumes kept) | pre-restart committed **log prefix** survives; leader re-forms; its current-term NoOp commits the prefix; all P5a state machines rebuild equal applied state. Covered by the ignored Rust recovery test. |
 | S6 | **Network partition (split-brain)** | see partition mechanics §7 | majority commits; minority makes **no new commits**; heal → converge; **≤1 leader/term throughout (P2b records)** |
 | S7 | **Rolling restart** | restart nodes one-by-one, waiting for healthy | cluster stays available; no committed write lost |
 | S8 | **Load / soak** | steady write load ± Pumba latency/loss | sustained commits; final convergence; **no ack'd write lost** (durability, at-least-once — *not* duplicate-free; see below) |
@@ -639,7 +639,7 @@ docker network disconnect "$net" "$($COMPOSE ps -q node1)"
    the PR CI job.
 4. **P3 — State machine + chaos.** **P5a is complete:** the arithmetic machine is
    in importable `raft_log::testkit`, `raft-node-test` embeds it, and
-   `make e2e-docker-recovery` verifies full-restart reconstruction by the elected
+   the ignored Rust recovery test verifies full-restart reconstruction by the elected
    leader's current-term NoOp. Add Pumba + concrete partition mechanics;
    scenarios **S4, S6, S7, S8**. Add nightly full-matrix CI.
 5. **P4 — Hardening.** S9 log-rotation-under-volume; 5-node parametrization;

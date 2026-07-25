@@ -18,10 +18,6 @@ fn applies_arithmetic_commands_and_publishes_state() {
             applied_commands: 2,
         }
     );
-    assert_eq!(
-        machine.state_snapshot().unwrap(),
-        br#"{"value":12,"applied_commands":2}"#
-    );
 }
 
 #[test]
