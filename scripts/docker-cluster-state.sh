@@ -13,8 +13,20 @@ if [[ $# -eq 1 ]]; then
   node_ids=("$1")
 fi
 
+unavailable=0
+
 for node_id in "${node_ids[@]}"; do
-  "${COMPOSE[@]}" run --rm --no-deps raft-state \
+  if output=$("${COMPOSE[@]}" run --rm --no-deps raft-state \
     --config /etc/raft/cluster.docker.yaml \
-    --node-id "$node_id"
+    --node-id "$node_id" 2>&1); then
+    printf '%s\n' "$output"
+  else
+    unavailable=1
+    echo "node $node_id is unavailable; continuing with the remaining nodes" >&2
+    printf '%s\n' "$output" >&2
+  fi
 done
+
+# A partial result is useful interactively, but callers can still detect that
+# one or more nodes were unavailable from the exit status.
+exit "$unavailable"
