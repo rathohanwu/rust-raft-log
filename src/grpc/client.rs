@@ -8,7 +8,8 @@ use tonic::{Request, Status};
 
 use super::proto::raft_service_client::RaftServiceClient;
 use crate::models::types_proto::{
-    ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest, ProtoRequestVoteRequest,
+    ClientRequestMessage, ClientResponseMessage, GetAppliedStateRequest, GetAppliedStateResponse,
+    ProtoAppendEntriesRequest, ProtoRequestVoteRequest,
 };
 use crate::models::{
     AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, NodeId, RequestVoteRequest,
@@ -137,6 +138,25 @@ impl RaftGrpcClient {
             }
         };
 
+        Ok(response.into_inner())
+    }
+
+    /// Read the state published by an embedded application state machine.
+    pub async fn get_applied_state(
+        &self,
+        node_id: NodeId,
+    ) -> Result<GetAppliedStateResponse, Status> {
+        let mut client = self.get_connection(node_id).await?;
+        let response = match client
+            .get_applied_state(Request::new(GetAppliedStateRequest {}))
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.close_connection(node_id).await;
+                return Err(error);
+            }
+        };
         Ok(response.into_inner())
     }
 

@@ -12,6 +12,9 @@ service RaftService {
 
     // ClientRequest RPC - Invoked by clients to submit commands to the cluster
     rpc ClientRequest(ClientRequestMessage) returns (ClientResponseMessage);
+
+    // Read-only test/debug endpoint for the embedded application state machine.
+    rpc GetAppliedState(GetAppliedStateRequest) returns (GetAppliedStateResponse);
 }
 
 // RequestVote RPC Request
@@ -88,4 +91,16 @@ message ClientResponseMessage {
     uint64 log_index = 3;
     // Error message if success=false
     string error_message = 4;
+}
+
+message GetAppliedStateRequest {}
+
+message GetAppliedStateResponse {
+    // False when the node has no embedded state machine (the production binary).
+    bool available = 1;
+    // State-machine-defined JSON document. The Docker test node returns
+    // {"value": <integer>, "applied_commands": <integer>}.
+    bytes state_json = 2;
+    // Raft's last_applied index, including NoOp entries.
+    uint64 last_applied = 3;
 }

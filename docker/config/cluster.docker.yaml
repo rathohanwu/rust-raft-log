@@ -1,0 +1,11 @@
+nodes:
+  - { node_id: 1, ip_address: "node1", port: 18001 }
+  - { node_id: 2, ip_address: "node2", port: 18002 }
+  - { node_id: 3, ip_address: "node3", port: 18003 }
+
+cluster_settings:
+  log_directory: "/var/lib/raft"
+  log_segment_size: 1048576
+  max_entries_per_query: 1000
+  election_timeout_range: { min: 600, max: 1000 }
+  heartbeat_interval: 150

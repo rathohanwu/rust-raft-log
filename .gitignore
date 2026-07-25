@@ -22,3 +22,4 @@ raft-data/
 
 # Test artifacts
 temp/
+artifacts/

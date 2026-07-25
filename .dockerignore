@@ -1,0 +1,6 @@
+.git
+target
+raft_logs
+test_logs_node_*
+artifacts
+docker/**/*.local.yaml

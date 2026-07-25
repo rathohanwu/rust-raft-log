@@ -1,0 +1,7 @@
+services:
+  node1:
+    ports: ["18001"]
+  node2:
+    ports: ["18002"]
+  node3:
+    ports: ["18003"]
