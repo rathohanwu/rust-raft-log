@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust Raft Log design guide</title>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'base',
+      securityLevel: 'strict',
+      themeVariables: {
+        background: '#f8fafc',
+        primaryColor: '#dbeafe',
+        primaryTextColor: '#172554',
+        primaryBorderColor: '#2563eb',
+        secondaryColor: '#ede9fe',
+        tertiaryColor: '#dcfce7',
+        lineColor: '#64748b',
+        actorBkg: '#e0e7ff',
+        actorBorder: '#4f46e5',
+        actorTextColor: '#312e81',
+        signalColor: '#2563eb',
+        signalTextColor: '#1e3a8a',
+        labelBoxBkgColor: '#fef3c7',
+        labelBoxBorderColor: '#f59e0b',
+        labelTextColor: '#78350f',
+        noteBkgColor: '#fef3c7',
+        noteBorderColor: '#f59e0b',
+        noteTextColor: '#78350f',
+        activationBkgColor: '#ddd6fe',
+        activationBorderColor: '#7c3aed'
+      }
+    });
+  </script>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 45%, #f5f3ff 100%); color: #172033; }
+    main { max-width: 1200px; margin: 0 auto; padding: 36px 20px 64px; }
+    h1 { margin: 0 0 8px; color: #1e3a8a; }
+    h2 { margin-top: 40px; color: #312e81; }
+    .lede { color: #516078; max-width: 900px; line-height: 1.55; }
+    .diagram { background: #ffffff; border: 1px solid #cbd5e1; border-top: 4px solid #6366f1; border-radius: 12px; padding: 18px; overflow-x: auto; box-shadow: 0 8px 24px #17203312; }
+    code { background: #e9edf4; border-radius: 4px; padding: 1px 5px; }
+    .note { border-left: 4px solid #f59e0b; padding: 10px 14px; background: #fffbeb; line-height: 1.5; }
+    .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 20px 0 8px; padding: 0; list-style: none; color: #334155; font-size: 0.9rem; }
+    .legend li { display: flex; align-items: center; gap: 6px; }
+    .swatch { width: 12px; height: 12px; border: 1px solid #475569; border-radius: 3px; }
+    .ingress { background: #dbeafe; }
+    .actor { background: #ede9fe; }
+    .durable { background: #dcfce7; }
+    .decision { background: #fef3c7; }
+    .failure { background: #fee2e2; }
+    .contents { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0; }
+    .contents a { border: 1px solid #c7d2fe; border-radius: 999px; background: #eef2ff; color: #3730a3; padding: 6px 11px; text-decoration: none; font-size: 0.9rem; }
+    .contents a:hover { background: #e0e7ff; }
+    .design-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+    .design-card { border: 1px solid #cbd5e1; border-radius: 12px; padding: 16px; background: #ffffff; box-shadow: 0 4px 14px #1720330d; }
+    .design-card h3 { margin: 0 0 8px; font-size: 1rem; }
+    .design-card p { margin: 0; color: #475569; line-height: 1.5; }
+    .design-card.core { border-top: 4px solid #6366f1; }
+    .design-card.storage { border-top: 4px solid #16a34a; }
+    .design-card.events { border-top: 4px solid #2563eb; }
+    .design-card.machine { border-top: 4px solid #f59e0b; }
+    .principles { margin: 14px 0 0; padding-left: 20px; line-height: 1.6; }
+    @media (max-width: 560px) { main { padding: 26px 14px 48px; } .diagram { padding: 10px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Rust Raft Log: Design Guide</h1>
+  <p class="lede">
+    This guide explains the implementation's durable consensus core, single-owner event loop,
+    state-machine boundary, and the protocol flows that connect them.
+  </p>
+  <ul class="legend" aria-label="Diagram colour legend">
+    <li><span class="swatch ingress"></span>request path</li>
+    <li><span class="swatch actor"></span>Raft control</li>
+    <li><span class="swatch durable"></span>durable or committed state</li>
+    <li><span class="swatch decision"></span>decision or retry</li>
+    <li><span class="swatch failure"></span>failure path</li>
+  </ul>
+  <nav class="contents" aria-label="Page sections">
+    <a href="#design">Design</a>
+    <a href="#events">Event-driven actor</a>
+    <a href="#state-machine">State machine</a>
+    <a href="#protocol-flows">Protocol flows</a>
+    <a href="#recovery">Recovery</a>
+  </nav>
+
+  <section id="design">
+    <h2>Design at a glance</h2>
+    <div class="design-grid">
+      <article class="design-card core">
+        <h3>Consensus core</h3>
+        <p><code>RaftNode</code> owns Raft roles, terms, votes, log matching, replication progress, and commitment.</p>
+      </article>
+      <article class="design-card storage">
+        <h3>Durable storage</h3>
+        <p>Memory-mapped segments store the log; a separate metadata file stores the current term and vote.</p>
+      </article>
+      <article class="design-card events">
+        <h3>Event-driven ownership</h3>
+        <p>One actor thread serializes every Raft mutation, while Tokio handles concurrent outbound RPC I/O.</p>
+      </article>
+      <article class="design-card machine">
+        <h3>Application boundary</h3>
+        <p>An optional deterministic state machine observes committed commands without becoming part of the protocol.</p>
+      </article>
+    </div>
+    <ul class="principles">
+      <li>Persist a changed term or vote before returning a response that relies on it.</li>
+      <li>Persist changed follower log data before acknowledging <code>AppendEntries</code> success.</li>
+      <li>Commit only entries from the leader's current term after they reach a quorum.</li>
+      <li>Fail-stop after a persistence or storage-invariant failure instead of acknowledging unsafe progress.</li>
+    </ul>
+  </section>
+
+  <section id="events">
+  <h2>Event-driven actor pattern</h2>
+  <p class="lede">The service layer assigns IDs and forwards work. The actor receives all event sources in one queue, calls the synchronous Raft core, and publishes outbound work without sharing mutable Raft state.</p>
+  <div class="diagram mermaid">
+flowchart LR
+    Client[Client] -->|ClientRequest| Service[gRPC service]
+    Peer[Peer node] -->|RequestVote / AppendEntries| Service
+    Service --> Handle[RaftHandle]
+    Handle --> Actor[Raft actor thread]
+    Actor --> Node[RaftNode]
+    Node --> Log[Segmented mmap log]
+    Node --> State[Hard state mmap file]
+    Node --> SM[Optional StateMachine]
+    Actor -->|spawn outbound RPC| Tokio[Tokio runtime]
+    Tokio --> PeerService[Peer gRPC service]
+    PeerService -->|response event| Actor
+    classDef ingress fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px
+    classDef control fill:#ede9fe,stroke:#7c3aed,color:#312e81,stroke-width:2px
+    classDef durable fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef external fill:#fef3c7,stroke:#f59e0b,color:#78350f,stroke-width:2px
+    class Client,Peer,Service,Handle ingress
+    class Actor,Node control
+    class Log,State durable
+    class SM,Tokio,PeerService external
+  </div>
+  <div class="diagram mermaid">
+flowchart LR
+    Rpc[Inbound RequestVote or AppendEntries] --> Queue[Actor command queue]
+    Timer[Election or heartbeat deadline] --> Queue
+    PeerResponse[Outbound RPC response] --> Queue
+    Proposal[Client proposal or cancellation] --> Queue
+    Queue --> Drive[Actor drives one event]
+    Drive --> Core[RaftNode transition]
+    Core --> Publish[Update view and complete committed waiters]
+    Core --> Outbound[Schedule peer RPC if needed]
+    classDef event fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px
+    classDef actor fill:#ede9fe,stroke:#7c3aed,color:#312e81,stroke-width:2px
+    classDef result fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef peer fill:#fef3c7,stroke:#f59e0b,color:#78350f,stroke-width:2px
+    class Rpc,Timer,PeerResponse,Proposal event
+    class Queue,Drive,Core actor
+    class Publish result
+    class Outbound peer
+  </div>
+  </section>
+
+  <section id="state-machine">
+  <h2>State-machine contract</h2>
+  <div class="design-grid">
+    <article class="design-card machine">
+      <h3>What is applied</h3>
+      <p>Only committed <code>Normal</code> log entries call <code>StateMachine::apply</code>, once and in index order. Raft <code>NoOp</code> entries advance <code>last_applied</code> without calling the application.</p>
+    </article>
+    <article class="design-card core">
+      <h3>Execution model</h3>
+      <p><code>apply</code> runs synchronously on the actor thread. It must be deterministic, fast, and free of blocking I/O or re-entrant Raft calls.</p>
+    </article>
+    <article class="design-card storage">
+      <h3>Recovery boundary</h3>
+      <p>Raft persists the log and hard state, not application snapshots. On restart, state machines rebuild only as a committed prefix becomes known.</p>
+    </article>
+    <article class="design-card events">
+      <h3>Observation</h3>
+      <p><code>state_snapshot</code> is optional. <code>GetAppliedState</code> is a test/debug RPC and is unavailable on the production binary without an embedded machine.</p>
+    </article>
+  </div>
+  </section>
+
+  <section id="protocol-flows">
+  <h2>Client proposal: append, replicate, commit, acknowledge</h2>
+  <div class="diagram mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as gRPC service
+    participant A as Raft actor
+    participant L as Leader RaftNode
+    participant D as Durable log
+    participant F as Followers
+    C->>S: ClientRequest(payload)
+    S->>A: ClientProposal(request ID, payload)
+    A->>L: append_new_entry(payload)
+    alt not leader or stopped
+        L-->>A: error / leader hint
+        A-->>S: reject request
+        S-->>C: success=false
+    else leader
+        L->>D: append and flush Normal entry
+        D-->>L: durable index
+        A->>F: AppendEntries batches (async)
+        F-->>A: AppendEntries responses
+        A->>L: handle_append_entries_response
+        L->>L: majority for current-term index?
+        alt committed
+            L->>L: advance commitIndex and apply committed entries
+            A-->>S: resolve waiting request
+            S-->>C: success=true, log_index
+        else leadership changes or 2s service timeout
+            A-->>S: reject / timeout
+            S-->>C: success=false
+        end
+    end
+  </div>
+
+  <h2>Election and leadership transition</h2>
+  <div class="diagram mermaid">
+flowchart TD
+    A[Election deadline expires] --> B[Actor resets randomized deadline]
+    B --> C[RaftNode increments term, votes for self, becomes candidate]
+    C --> D[Flush currentTerm and votedFor]
+    D --> E{Single-node quorum?}
+    E -- yes --> H[Become leader]
+    E -- no --> F[Send RequestVote to other voters]
+    F --> G{Current-term majority grants votes?}
+    G -- no --> I[Wait for responses or next deadline]
+    G -- yes --> H
+    H --> J[Append and flush current-term NoOp]
+    J --> K[Set leader state, nextIndex, matchIndex]
+    K --> L[Send replication immediately]
+    I --> A
+    classDef trigger fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px
+    classDef decision fill:#fef3c7,stroke:#f59e0b,color:#78350f,stroke-width:2px
+    classDef action fill:#ede9fe,stroke:#7c3aed,color:#312e81,stroke-width:2px
+    classDef success fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef retry fill:#ffedd5,stroke:#f97316,color:#7c2d12,stroke-width:2px
+    class A trigger
+    class E,G decision
+    class B,C,D,F action
+    class H,J,K,L success
+    class I retry
+  </div>
+
+  <h2>Follower AppendEntries and conflict repair</h2>
+  <div class="diagram mermaid">
+flowchart TD
+    A[AppendEntries arrives] --> B{Known voter and term >= current term?}
+    B -- no --> C[Return failure with current term and last index]
+    B -- yes --> D[Become or remain follower; record leader]
+    D --> E{prevLog index and term match?}
+    E -- no --> F[Flush changed term if needed]
+    F --> G[Return failure with follower last index]
+    E -- yes --> H{Entries empty?}
+    H -- yes --> I[Flush changed term if needed]
+    H -- no --> J[Keep matching entries; find first term conflict]
+    J --> K[Truncate only the conflicting suffix]
+    K --> L[Append remaining entries without per-entry sync]
+    L --> M[Flush all changed log data]
+    M --> I
+    I --> N[Set commitIndex to min leaderCommit and last index]
+    N --> O[Apply newly committed Normal entries]
+    O --> P[Return success]
+    classDef request fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px
+    classDef decision fill:#fef3c7,stroke:#f59e0b,color:#78350f,stroke-width:2px
+    classDef repair fill:#ede9fe,stroke:#7c3aed,color:#312e81,stroke-width:2px
+    classDef durable fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef failure fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+    class A request
+    class B,E,H decision
+    class D,F,I,J,K,L repair
+    class M,N,O,P durable
+    class C,G failure
+  </div>
+
+  <h2>Replication response and commitment</h2>
+  <div class="diagram mermaid">
+flowchart TD
+    A[Leader receives AppendEntries response] --> B{Response term is higher?}
+    B -- yes --> C[Persist higher term, step down, fail current-term client waiters]
+    B -- no --> D{Response success?}
+    D -- no --> E[Reduce nextIndex using follower last-index hint]
+    E --> F[Send another replication request]
+    D -- yes --> G[Increase matchIndex and nextIndex monotonically]
+    G --> H[Find highest majority-replicated current-term entry]
+    H --> I{Commit index advanced?}
+    I -- no --> J[Continue heartbeats / replication]
+    I -- yes --> K[Apply entries through commit index]
+    K --> L[Resolve client waiters at committed indices]
+    classDef request fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px
+    classDef decision fill:#fef3c7,stroke:#f59e0b,color:#78350f,stroke-width:2px
+    classDef retry fill:#ffedd5,stroke:#f97316,color:#7c2d12,stroke-width:2px
+    classDef durable fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef failure fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+    class A,G,H request
+    class B,D,I decision
+    class E,F,J retry
+    class K,L durable
+    class C failure
+  </div>
+  </section>
+
+  <section id="recovery">
+  <h2>Restart and application state boundary</h2>
+  <div class="diagram mermaid">
+flowchart TD
+    A[Node restarts] --> B[Load and validate log segments]
+    B --> C[Load current term and voted for]
+    C --> D[Start as follower with volatile indexes at zero]
+    D --> E[Wait for election or AppendEntries]
+    E --> F[Current-term NoOp becomes committed]
+    F --> G[Advance commit index]
+    G --> H[Apply committed Normal entries in order]
+    H --> I[Optional StateMachine]
+    J[Durable uncommitted suffix] --> K[Remain unapplied]
+    classDef recovery fill:#dbeafe,stroke:#2563eb,color:#172554,stroke-width:2px
+    classDef control fill:#ede9fe,stroke:#7c3aed,color:#312e81,stroke-width:2px
+    classDef committed fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef safe fill:#fef3c7,stroke:#f59e0b,color:#78350f,stroke-width:2px
+    class A,B,C recovery
+    class D,E control
+    class F,G,H,I committed
+    class J,K safe
+  </div>
+  </section>
+
+  <p class="note">
+    Durability is part of the protocol boundary: changed hard state is flushed before the related
+    response, and changed follower log data is flushed before <code>AppendEntries</code> success.
+    If a required persistence operation or storage invariant fails, the node fail-stops instead of
+    acknowledging normal Raft progress. The application state machine is optional and runs
+    synchronously on the actor thread only for committed <code>Normal</code> entries.
+  </p>
+</main>
+</body>
+</html>
