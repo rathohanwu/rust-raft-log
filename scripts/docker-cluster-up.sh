@@ -14,7 +14,7 @@ cat <<EOF
 
 Cluster is ready. Try:
   scripts/docker-cluster-command.sh add 1
-  scripts/docker-cluster-state.sh
+  scripts/docker-cluster-apply-log.sh
   scripts/docker-node-stop.sh 1
   scripts/docker-node-start.sh 1
   scripts/docker-cluster-stop.sh

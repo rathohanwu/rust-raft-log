@@ -11,7 +11,7 @@ async fn e2e_two_node_follower_loss_preserves_leader_but_loses_quorum() {
     let (leader, _) = cluster.wait_for_leader(Duration::from_secs(5)).await;
     let follower = if leader == 1 { 2 } else { 1 };
     let before = cluster
-        .raft(leader)
+        .node_view(leader)
         .lock()
         .unwrap()
         .get_state()
@@ -19,7 +19,7 @@ async fn e2e_two_node_follower_loss_preserves_leader_but_loses_quorum() {
     cluster.kill(follower).await;
     sleep(Duration::from_millis(700)).await;
     assert_eq!(
-        cluster.raft(leader).lock().unwrap().get_server_state(),
+        cluster.node_view(leader).lock().unwrap().get_server_state(),
         ServerState::Leader
     );
     assert!(matches!(
@@ -30,7 +30,7 @@ async fn e2e_two_node_follower_loss_preserves_leader_but_loses_quorum() {
     ));
     assert_eq!(
         cluster
-            .raft(leader)
+            .node_view(leader)
             .lock()
             .unwrap()
             .get_state()
@@ -49,7 +49,11 @@ async fn e2e_two_node_leader_loss_prevents_new_election() {
     cluster.kill(leader).await;
     sleep(Duration::from_secs(2)).await;
     assert_ne!(
-        cluster.raft(follower).lock().unwrap().get_server_state(),
+        cluster
+            .node_view(follower)
+            .lock()
+            .unwrap()
+            .get_server_state(),
         ServerState::Leader
     );
     assert!(!matches!(

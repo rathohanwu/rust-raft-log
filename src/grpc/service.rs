@@ -1,9 +1,8 @@
-use super::actor::RaftHandle;
+use super::handle::RaftHandle;
 use super::proto::raft_service_server::RaftService;
 use crate::models::types_proto::{
-    ClientRequestMessage, ClientResponseMessage, GetAppliedStateRequest, GetAppliedStateResponse,
-    ProtoAppendEntriesRequest, ProtoAppendEntriesResponse, ProtoRequestVoteRequest,
-    ProtoRequestVoteResponse,
+    ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest,
+    ProtoAppendEntriesResponse, ProtoRequestVoteRequest, ProtoRequestVoteResponse,
 };
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -13,15 +12,15 @@ use tokio::time::{timeout, Duration};
 use tonic::{Request, Response, Status};
 
 pub struct RaftGrpcService {
-    raft: RaftHandle,
+    raft_handle: RaftHandle,
     available: Arc<AtomicBool>,
     next_rpc_id: AtomicU64,
     next_client_request_id: AtomicU64,
 }
 impl RaftGrpcService {
-    pub fn new(raft: RaftHandle, available: Arc<AtomicBool>) -> Self {
+    pub fn new(raft_handle: RaftHandle, available: Arc<AtomicBool>) -> Self {
         Self {
-            raft,
+            raft_handle,
             available,
             next_rpc_id: AtomicU64::new(1),
             next_client_request_id: AtomicU64::new(1),
@@ -45,7 +44,7 @@ impl RaftService for RaftGrpcService {
     ) -> Result<Response<ProtoRequestVoteResponse>, Status> {
         self.available()?;
         Ok(Response::new(
-            self.raft
+            self.raft_handle
                 .request_vote(Self::id(&self.next_rpc_id), request.into_inner().into())
                 .await
                 .map_err(Status::unavailable)?
@@ -58,7 +57,7 @@ impl RaftService for RaftGrpcService {
     ) -> Result<Response<ProtoAppendEntriesResponse>, Status> {
         self.available()?;
         Ok(Response::new(
-            self.raft
+            self.raft_handle
                 .append_entries(Self::id(&self.next_rpc_id), request.into_inner().into())
                 .await
                 .map_err(Status::unavailable)?
@@ -71,54 +70,34 @@ impl RaftService for RaftGrpcService {
     ) -> Result<Response<ClientResponseMessage>, Status> {
         self.available()?;
         let id = Self::id(&self.next_client_request_id);
-        let raft = self.raft.clone();
+        let raft_handle = self.raft_handle.clone();
         let result = timeout(
             Duration::from_secs(2),
-            raft.propose(id, request.into_inner().payload),
+            raft_handle.propose(id, request.into_inner().payload),
         )
         .await;
         let response = match result {
             Ok(Ok((_term, index))) => ClientResponseMessage {
                 success: true,
-                leader_id: self.raft.node_id(),
+                leader_id: self.raft_handle.node_id(),
                 log_index: index,
                 error_message: String::new(),
             },
             Ok(Err(error)) => ClientResponseMessage {
                 success: false,
-                leader_id: self.raft.leader_id().unwrap_or(0),
+                leader_id: self.raft_handle.leader_id().unwrap_or(0),
                 log_index: 0,
                 error_message: error,
             },
             Err(_) => {
-                self.raft.cancel_client_request(id);
+                self.raft_handle.cancel_client_request(id);
                 ClientResponseMessage {
                     success: false,
-                    leader_id: self.raft.leader_id().unwrap_or(0),
+                    leader_id: self.raft_handle.leader_id().unwrap_or(0),
                     log_index: 0,
                     error_message: "Timed out waiting for the entry to commit".into(),
                 }
             }
-        };
-        Ok(Response::new(response))
-    }
-    async fn get_applied_state(
-        &self,
-        _request: Request<GetAppliedStateRequest>,
-    ) -> Result<Response<GetAppliedStateResponse>, Status> {
-        self.available()?;
-        let last_applied = self.raft.snapshot().last_applied;
-        let response = match self.raft.applied_state() {
-            Some(state_json) => GetAppliedStateResponse {
-                available: true,
-                state_json,
-                last_applied,
-            },
-            None => GetAppliedStateResponse {
-                available: false,
-                state_json: Vec::new(),
-                last_applied,
-            },
         };
         Ok(Response::new(response))
     }

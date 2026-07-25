@@ -54,10 +54,6 @@ path = "src/bin/client.rs"
 name = "raft-node-test"
 path = "src/bin/raft_node_test.rs"
 
-[[bin]]
-name = "raft-state"
-path = "src/bin/state.rs"
-
 [profile.release]
 lto = true
 codegen-units = 1

@@ -21,7 +21,6 @@ RUN apt-get update \
 COPY --from=builder /app/target/release/rust-raft-log /usr/local/bin/rust-raft-log
 COPY --from=builder /app/target/release/raft-client /usr/local/bin/raft-client
 COPY --from=builder /app/target/release/raft-node-test /usr/local/bin/raft-node-test
-COPY --from=builder /app/target/release/raft-state /usr/local/bin/raft-state
 
 # P1 patch, once `raft-probe` exists:
 # COPY --from=builder /app/target/release/raft-probe /usr/local/bin/raft-probe

@@ -13,7 +13,6 @@ pub mod proto {
 pub use proto::{
     AppendEntriesRequest as ProtoAppendEntriesRequest,
     AppendEntriesResponse as ProtoAppendEntriesResponse, ClientRequestMessage,
-    ClientResponseMessage, GetAppliedStateRequest, GetAppliedStateResponse,
-    LogEntry as ProtoLogEntry, RequestVoteRequest as ProtoRequestVoteRequest,
-    RequestVoteResponse as ProtoRequestVoteResponse,
+    ClientResponseMessage, LogEntry as ProtoLogEntry,
+    RequestVoteRequest as ProtoRequestVoteRequest, RequestVoteResponse as ProtoRequestVoteResponse,
 };

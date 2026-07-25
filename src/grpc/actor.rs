@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -7,15 +7,14 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 
 use super::client::RaftGrpcClient;
+use super::handle::{ClientResult, NodeViewData, RaftHandle};
 use crate::consensus::{RaftNode, RaftStateSnapshot};
 use crate::models::{
     AppendEntriesRequest, AppendEntriesResponse, ClusterConfig, NodeId, RequestVoteRequest,
     RequestVoteResponse, ServerState,
 };
 
-type ClientResult = Result<(u64, u64), String>;
-
-enum Event {
+pub(crate) enum Event {
     Tick,
     RequestVote {
         rpc_id: u64,
@@ -43,7 +42,7 @@ enum Event {
     },
 }
 
-enum Command {
+pub(crate) enum Command {
     Event(Event),
     RequestVote {
         rpc_id: u64,
@@ -70,192 +69,17 @@ enum Command {
         index: u64,
         response: mpsc::Sender<Option<crate::models::LogEntry>>,
     },
-    QueryAppliedState {
-        response: mpsc::Sender<Option<Vec<u8>>>,
-    },
-    LegacyAppend {
-        payload: Vec<u8>,
-        response: mpsc::Sender<Result<u64, String>>,
-    },
     Shutdown,
 }
 
-/// Cloneable ingress to the single Raft actor. It contains no Raft state.
-#[derive(Clone)]
-pub struct RaftHandle {
-    tx: mpsc::Sender<Command>,
-    snapshot: Arc<RwLock<RaftStateSnapshot>>,
-    leader: Arc<RwLock<Option<NodeId>>>,
-    node_id: NodeId,
-}
-
-#[derive(Clone)]
-pub struct RaftNodeView {
-    raft: RaftHandle,
-}
-struct NodeViewData {
-    log_length: u64,
-    last_log_info: (u64, u64),
-}
-
-impl RaftHandle {
-    pub fn snapshot(&self) -> RaftStateSnapshot {
-        self.snapshot.read().unwrap().clone()
-    }
-    pub fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-    pub fn leader_id(&self) -> Option<NodeId> {
-        *self.leader.read().unwrap()
-    }
-    pub fn shutdown(&self) {
-        let _ = self.tx.send(Command::Shutdown);
-    }
-    pub fn cancel_client_request(&self, request_id: u64) {
-        let _ = self.tx.send(Command::CancelClientRequest { request_id });
-    }
-
-    pub async fn request_vote(
-        &self,
-        rpc_id: u64,
-        request: RequestVoteRequest,
-    ) -> Result<RequestVoteResponse, String> {
-        let (response, rx) = oneshot::channel();
-        self.tx
-            .send(Command::RequestVote {
-                rpc_id,
-                request,
-                response,
-            })
-            .map_err(|_| "Raft actor is shut down".to_string())?;
-        rx.await
-            .map_err(|_| "Raft actor dropped vote reply".to_string())
-    }
-
-    pub async fn append_entries(
-        &self,
-        rpc_id: u64,
-        request: AppendEntriesRequest,
-    ) -> Result<AppendEntriesResponse, String> {
-        let (response, rx) = oneshot::channel();
-        self.tx
-            .send(Command::AppendEntries {
-                rpc_id,
-                request,
-                response,
-            })
-            .map_err(|_| "Raft actor is shut down".to_string())?;
-        rx.await
-            .map_err(|_| "Raft actor dropped append reply".to_string())
-    }
-
-    pub async fn propose(&self, request_id: u64, payload: Vec<u8>) -> ClientResult {
-        let (response, rx) = oneshot::channel();
-        self.tx
-            .send(Command::ClientProposal {
-                request_id,
-                payload,
-                response,
-            })
-            .map_err(|_| "Raft actor is shut down".to_string())?;
-        rx.await
-            .map_err(|_| "Raft actor dropped proposal reply".to_string())?
-    }
-    pub fn node_view(&self) -> Arc<Mutex<RaftNodeView>> {
-        Arc::new(Mutex::new(RaftNodeView { raft: self.clone() }))
-    }
-    fn view(&self) -> Option<NodeViewData> {
-        let (tx, rx) = mpsc::channel();
-        self.tx.send(Command::Query { response: tx }).ok()?;
-        rx.recv().ok()
-    }
-    fn entry(&self, index: u64) -> Option<crate::models::LogEntry> {
-        let (tx, rx) = mpsc::channel();
-        self.tx
-            .send(Command::QueryEntry {
-                index,
-                response: tx,
-            })
-            .ok()?;
-        rx.recv().ok().flatten()
-    }
-    pub fn applied_state(&self) -> Option<Vec<u8>> {
-        let (tx, rx) = mpsc::channel();
-        self.tx
-            .send(Command::QueryAppliedState { response: tx })
-            .ok()?;
-        rx.recv().ok().flatten()
-    }
-    fn legacy_append(&self, payload: Vec<u8>) -> Result<u64, String> {
-        let (tx, rx) = mpsc::channel();
-        self.tx
-            .send(Command::LegacyAppend {
-                payload,
-                response: tx,
-            })
-            .map_err(|_| "Raft actor is shut down".to_string())?;
-        rx.recv()
-            .map_err(|_| "Raft actor dropped append reply".to_string())?
-    }
-}
-
-impl RaftNodeView {
-    pub fn get_state(&self) -> RaftStateSnapshot {
-        self.raft.snapshot()
-    }
-    pub fn get_current_term(&self) -> u64 {
-        self.get_state().current_term
-    }
-    pub fn get_current_leader(&self) -> Option<NodeId> {
-        self.raft.leader_id()
-    }
-    pub fn get_server_state(&self) -> ServerState {
-        self.get_state().server_state
-    }
-    pub fn get_log_length(&self) -> u64 {
-        self.raft.view().map_or(0, |view| view.log_length)
-    }
-    pub fn get_last_log_info(&self) -> (u64, u64) {
-        self.raft.view().map_or((0, 0), |view| view.last_log_info)
-    }
-    pub fn get_entry(&self, index: u64) -> Option<crate::models::LogEntry> {
-        self.raft.entry(index)
-    }
-    pub fn append_new_entry(&mut self, payload: Vec<u8>) -> Result<u64, String> {
-        self.raft.legacy_append(payload)
-    }
-}
-
-pub struct RaftActor;
-
-impl RaftActor {
-    pub fn spawn(node: RaftNode, io_handle: Handle) -> RaftHandle {
-        let config = node.get_config().clone();
-        let snapshot = Arc::new(RwLock::new(node.get_state()));
-        let leader = Arc::new(RwLock::new(node.get_current_leader()));
-        let (tx, rx) = mpsc::channel();
-        let handle = RaftHandle {
-            tx: tx.clone(),
-            snapshot: Arc::clone(&snapshot),
-            leader: Arc::clone(&leader),
-            node_id: config.node_id,
-        };
-        thread::Builder::new()
-            .name(format!("raft-actor-{}", config.node_id))
-            .spawn(move || Actor::new(node, config, rx, tx, snapshot, leader, io_handle).run())
-            .expect("failed to spawn Raft actor thread");
-        handle
-    }
-}
-
-struct Actor {
+pub struct RaftActor {
     node: RaftNode,
     config: ClusterConfig,
-    rx: mpsc::Receiver<Command>,
-    tx: mpsc::Sender<Command>,
+    command_rx: mpsc::Receiver<Command>,
+    command_tx: mpsc::Sender<Command>,
     snapshot: Arc<RwLock<RaftStateSnapshot>>,
     leader: Arc<RwLock<Option<NodeId>>>,
-    io: Handle,
+    runtime: Handle,
     client: RaftGrpcClient,
     vote_replies: HashMap<u64, oneshot::Sender<RequestVoteResponse>>,
     append_replies: HashMap<u64, oneshot::Sender<AppendEntriesResponse>>,
@@ -265,15 +89,45 @@ struct Actor {
     heartbeat_deadline: Instant,
 }
 
-impl Actor {
+impl RaftActor {
+    pub fn spawn(node: RaftNode) -> RaftHandle {
+        let runtime_handle = Handle::current();
+        let config = node.get_config().clone();
+        let snapshot = Arc::new(RwLock::new(node.get_state()));
+        let leader = Arc::new(RwLock::new(node.get_current_leader()));
+        let (command_tx, command_rx) = mpsc::channel();
+        let handle = RaftHandle::new(
+            command_tx.clone(),
+            Arc::clone(&snapshot),
+            Arc::clone(&leader),
+            config.node_id,
+        );
+        thread::Builder::new()
+            .name(format!("raft-actor-{}", config.node_id))
+            .spawn(move || {
+                RaftActor::new(
+                    node,
+                    config,
+                    command_rx,
+                    command_tx,
+                    snapshot,
+                    leader,
+                    runtime_handle,
+                )
+                .run()
+            })
+            .expect("failed to spawn Raft actor thread");
+        handle
+    }
+
     fn new(
         node: RaftNode,
         config: ClusterConfig,
-        rx: mpsc::Receiver<Command>,
-        tx: mpsc::Sender<Command>,
+        command_rx: mpsc::Receiver<Command>,
+        command_tx: mpsc::Sender<Command>,
         snapshot: Arc<RwLock<RaftStateSnapshot>>,
         leader: Arc<RwLock<Option<NodeId>>>,
-        io: Handle,
+        runtime: Handle,
     ) -> Self {
         let now = Instant::now();
         let election_deadline = now + Self::election_timeout(&config);
@@ -282,11 +136,11 @@ impl Actor {
             node,
             client: RaftGrpcClient::new(config.clone()),
             config,
-            rx,
-            tx,
+            command_rx,
+            command_tx,
             snapshot,
             leader,
-            io,
+            runtime,
             vote_replies: HashMap::new(),
             append_replies: HashMap::new(),
             pending: HashMap::new(),
@@ -315,7 +169,7 @@ impl Actor {
                 self.election_deadline
             };
             match self
-                .rx
+                .command_rx
                 .recv_timeout(deadline.saturating_duration_since(now))
             {
                 Ok(command) => {
@@ -371,19 +225,6 @@ impl Actor {
             }
             Command::QueryEntry { index, response } => {
                 let _ = response.send(self.node.get_entry(index));
-            }
-            Command::QueryAppliedState { response } => {
-                let _ = response.send(self.node.get_application_state());
-            }
-            Command::LegacyAppend { payload, response } => {
-                let result = self
-                    .node
-                    .append_new_entry(payload)
-                    .map_err(|error| error.to_string());
-                if result.is_ok() {
-                    self.send_replication();
-                }
-                let _ = response.send(result);
             }
             Command::Shutdown => return false,
         }
@@ -525,24 +366,25 @@ impl Actor {
 
     fn send_votes(&self, request: RequestVoteRequest) {
         for peer in self.config.get_other_nodes() {
-            let tx = self.tx.clone();
+            let command_tx = self.command_tx.clone();
             let client = self.client.clone();
             let to = peer.node_id;
             let request = request.clone();
-            self.io.spawn(async move {
+            self.runtime.spawn(async move {
                 if let Ok(response) = client.request_vote(to, request).await {
-                    let _ = tx.send(Command::Event(Event::VoteResponse { from: to, response }));
+                    let _ =
+                        command_tx.send(Command::Event(Event::VoteResponse { from: to, response }));
                 }
             });
         }
     }
     fn send_replication(&self) {
         for (to, request) in self.node.build_replication_requests() {
-            let tx = self.tx.clone();
+            let command_tx = self.command_tx.clone();
             let client = self.client.clone();
-            self.io.spawn(async move {
+            self.runtime.spawn(async move {
                 if let Ok(response) = client.append_entries(to, request.clone()).await {
-                    let _ = tx.send(Command::Event(Event::AppendResponse {
+                    let _ = command_tx.send(Command::Event(Event::AppendResponse {
                         from: to,
                         request,
                         response,

@@ -228,8 +228,8 @@ impl TestCluster {
         ids
     }
 
-    pub fn raft(&self, id: NodeId) -> Arc<Mutex<RaftNodeView>> {
-        self.runtimes.get(&id).unwrap().server.get_raft_node()
+    pub fn node_view(&self, id: NodeId) -> Arc<Mutex<RaftNodeView>> {
+        self.runtimes.get(&id).unwrap().server.node_view()
     }
 
     pub async fn wait_for_leader(&self, timeout: Duration) -> (NodeId, u64) {
@@ -239,7 +239,7 @@ impl TestCluster {
                 .active_node_ids()
                 .into_iter()
                 .filter_map(|id| {
-                    let node = self.raft(id);
+                    let node = self.node_view(id);
                     let node = node.lock().unwrap();
                     (node.get_server_state() == ServerState::Leader)
                         .then_some((id, node.get_current_term()))
@@ -247,7 +247,7 @@ impl TestCluster {
                 .collect();
             if leaders.len() == 1 {
                 let (leader_id, term) = leaders[0];
-                let node = self.raft(leader_id);
+                let node = self.node_view(leader_id);
                 let node = node.lock().unwrap();
                 let commit_index = node.get_state().commit_index;
                 let established = commit_index > 0
@@ -364,7 +364,7 @@ impl TestCluster {
     }
 
     pub fn committed_log(&self, id: NodeId, upper_bound: u64) -> Vec<EntryView> {
-        let node = self.raft(id);
+        let node = self.node_view(id);
         let node = node.lock().unwrap();
         (1..=upper_bound)
             .filter_map(|index| node.get_entry(index))
@@ -409,7 +409,7 @@ impl TestCluster {
             let ids = self.active_node_ids();
             let commit_index = ids
                 .iter()
-                .map(|&id| self.raft(id).lock().unwrap().get_state().commit_index)
+                .map(|&id| self.node_view(id).lock().unwrap().get_state().commit_index)
                 .min()
                 .unwrap();
             let logs: Vec<_> = ids
