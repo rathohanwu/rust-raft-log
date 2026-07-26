@@ -2,6 +2,8 @@ nodes:
   - { node_id: 1, ip_address: "node1", port: 18001 }
   - { node_id: 2, ip_address: "node2", port: 18002 }
   - { node_id: 3, ip_address: "node3", port: 18003 }
+  - { node_id: 4, ip_address: "node4", port: 18004 }
+  - { node_id: 5, ip_address: "node5", port: 18005 }
 
 cluster_settings:
   log_directory: "/var/lib/raft"

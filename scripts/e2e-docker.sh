@@ -36,7 +36,7 @@ echo "Building Docker image for project $PROJECT..."
 "${COMPOSE[@]}" build
 
 echo "Starting Raft nodes..."
-"${COMPOSE[@]}" up -d --wait node1 node2 node3
+"${COMPOSE[@]}" up -d --wait node1 node2 node3 node4 node5
 
 echo "Submitting Docker smoke-test write..."
 "${COMPOSE[@]}" run --rm --no-deps raft-client \

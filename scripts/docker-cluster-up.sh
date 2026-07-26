@@ -2,12 +2,23 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/docker-cluster-common.sh"
 
-mkdir -p "$BUILDX_CONFIG"
-echo "Building the Docker test-node image..."
-"${COMPOSE[@]}" build node1
+case "${1:-}" in
+  "")
+    mkdir -p "$BUILDX_CONFIG"
+    echo "Building the Docker test-node image..."
+    "${COMPOSE[@]}" build node1
+    ;;
+  --skip-build)
+    echo "Reusing the existing Docker test-node image..."
+    ;;
+  *)
+    echo "Usage: $0 [--skip-build]" >&2
+    exit 2
+    ;;
+esac
 
-echo "Starting nodes 1, 2, and 3 in project $PROJECT..."
-"${COMPOSE[@]}" up -d --wait node1 node2 node3
+echo "Starting nodes 1 through 5 in project $PROJECT..."
+"${COMPOSE[@]}" up -d --wait node1 node2 node3 node4 node5
 "${COMPOSE[@]}" ps
 
 cat <<EOF

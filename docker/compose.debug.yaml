@@ -5,3 +5,7 @@ services:
     ports: ["18002"]
   node3:
     ports: ["18003"]
+  node4:
+    ports: ["18004"]
+  node5:
+    ports: ["18005"]
