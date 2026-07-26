@@ -11,9 +11,6 @@ keywords = ["raft", "consensus", "distributed", "log", "storage"]
 categories = ["database", "data-structures"]
 
 [dependencies]
-# Binary I/O with endianness support
-byteorder = "1.5"
-
 # Memory-mapped files
 memmap2 = "0.9.8"
 log = "0.4.28"

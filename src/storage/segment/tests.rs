@@ -1,5 +1,5 @@
 use super::*;
-use crate::storage::utils::create_memory_mapped_file;
+use crate::storage::utils::create_new_memory_mapped_file;
 use std::path::PathBuf;
 
 /// Returns a path under the repository-local test artifact directory.
@@ -15,11 +15,12 @@ fn test_segment_path(file_name: &str) -> String {
 
 #[test]
 fn should_return_rotated_needed_result() {
-    let memory_map = create_memory_mapped_file(&test_segment_path("log-segment-0000010.dat"), 67)
-        .expect("should be opened the file");
+    let memory_map =
+        create_new_memory_mapped_file(&test_segment_path("log-segment-0000010.dat"), 67)
+            .expect("should be opened the file");
 
     let mut log_segment = LogFileSegment::new(memory_map, 1);
-    let result = log_segment.append_entry(LogEntry::new_with_type(
+    let result = log_segment.append_entry(&LogEntry::new_with_type(
         1,
         1,
         EntryType::Normal,
@@ -34,11 +35,12 @@ fn should_return_rotated_needed_result() {
 
 #[test]
 fn should_return_success_result() {
-    let memory_map = create_memory_mapped_file(&test_segment_path("log-segment-0000011.dat"), 100)
-        .expect("should be opened the file");
+    let memory_map =
+        create_new_memory_mapped_file(&test_segment_path("log-segment-0000011.dat"), 100)
+            .expect("should be opened the file");
 
     let mut log_segment = LogFileSegment::new(memory_map, 1);
-    let result = log_segment.append_entry(LogEntry::new_with_type(
+    let result = log_segment.append_entry(&LogEntry::new_with_type(
         1,
         1,
         EntryType::Normal,
@@ -54,13 +56,13 @@ fn should_return_success_result() {
 #[test]
 fn should_return_correct_first_index_and_entry_count() {
     let memory_map =
-        create_memory_mapped_file(&test_segment_path("log-segment-0000001.dat"), 10_000)
+        create_new_memory_mapped_file(&test_segment_path("log-segment-0000001.dat"), 10_000)
             .expect("should be opened the file");
 
     let mut log_segment = LogFileSegment::new(memory_map, 1);
     assert_eq!(0, log_segment.get_entry_count());
 
-    log_segment.append_entry(LogEntry::new_with_type(
+    log_segment.append_entry(&LogEntry::new_with_type(
         1,
         1,
         EntryType::Normal,
@@ -68,7 +70,7 @@ fn should_return_correct_first_index_and_entry_count() {
     ));
     assert_eq!(1, log_segment.get_entry_count());
 
-    log_segment.append_entry(LogEntry::new_with_type(
+    log_segment.append_entry(&LogEntry::new_with_type(
         1,
         2,
         EntryType::Normal,
@@ -87,7 +89,7 @@ fn should_return_correct_first_index_and_entry_count() {
 fn should_return_empty_entry_result() {
     // Given
     let memory_map =
-        create_memory_mapped_file(&test_segment_path("log-segment-0000002.dat"), 10_000)
+        create_new_memory_mapped_file(&test_segment_path("log-segment-0000002.dat"), 10_000)
             .expect("should be opened the file");
     let mut log_segment = LogFileSegment::new(memory_map, 8);
 
@@ -97,13 +99,13 @@ fn should_return_empty_entry_result() {
     verify_empty_log_entry(log_segment.get_entry_at(8));
 
     // Given
-    log_segment.append_entry(LogEntry::new_with_type(
+    log_segment.append_entry(&LogEntry::new_with_type(
         1,
         8,
         EntryType::Normal,
         "this is han8".as_bytes().to_vec(),
     ));
-    log_segment.append_entry(LogEntry::new_with_type(
+    log_segment.append_entry(&LogEntry::new_with_type(
         1,
         9,
         EntryType::Normal,
@@ -122,16 +124,16 @@ fn should_return_empty_entry_result() {
 fn should_truncate_log_correctly() {
     // Given
     let memory_map =
-        create_memory_mapped_file(&test_segment_path("log-segment-0000003.dat"), 10_000)
+        create_new_memory_mapped_file(&test_segment_path("log-segment-0000003.dat"), 10_000)
             .expect("should be opened the file");
     let mut log_segment = LogFileSegment::new(memory_map, 11);
-    log_segment.append_entry(LogEntry::new_with_type(
+    log_segment.append_entry(&LogEntry::new_with_type(
         1,
         11,
         EntryType::Normal,
         "this is 11th data".as_bytes().to_vec(),
     ));
-    log_segment.append_entry(LogEntry::new_with_type(
+    log_segment.append_entry(&LogEntry::new_with_type(
         1,
         12,
         EntryType::Normal,
@@ -148,7 +150,7 @@ fn should_truncate_log_correctly() {
     verify_log_entry(log_segment.get_entry_at(11), 1, 11, "this is 11th data");
     verify_empty_log_entry(log_segment.get_entry_at(12));
 
-    log_segment.append_entry(LogEntry::new_with_type(
+    log_segment.append_entry(&LogEntry::new_with_type(
         1,
         12,
         EntryType::Normal,
@@ -179,7 +181,7 @@ fn verify_empty_log_entry(entry: Option<LogEntry>) {
 #[test]
 fn test_entry_type_encoding_decoding() {
     let memory_map =
-        create_memory_mapped_file(&test_segment_path("log-segment-entry-types.dat"), 1000)
+        create_new_memory_mapped_file(&test_segment_path("log-segment-entry-types.dat"), 1000)
             .expect("should be opened the file");
 
     let mut log_segment = LogFileSegment::new(memory_map, 1);
@@ -191,12 +193,12 @@ fn test_entry_type_encoding_decoding() {
         EntryType::Normal,
         "normal command".as_bytes().to_vec(),
     );
-    let result = log_segment.append_entry(normal_entry.clone());
+    let result = log_segment.append_entry(&normal_entry);
     assert!(matches!(result, AppendResult::Success));
 
     // Test NoOp entry type
     let noop_entry = LogEntry::new_with_type(1, 2, EntryType::NoOp, vec![]);
-    let result = log_segment.append_entry(noop_entry.clone());
+    let result = log_segment.append_entry(&noop_entry);
     assert!(matches!(result, AppendResult::Success));
 
     // Verify entries can be retrieved with correct types

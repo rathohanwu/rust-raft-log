@@ -1,45 +1,42 @@
-use byteorder::{LittleEndian, ReadBytesExt};
-use log::error;
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
-use std::io;
-use std::io::{Error, Write};
+use std::io::{Error, ErrorKind};
+use std::path::Path;
 
-pub fn create_memory_mapped_file(file_path: &str, size: u64) -> Result<MmapMut, Error> {
+pub fn create_new_memory_mapped_file(
+    file_path: impl AsRef<Path>,
+    size: u64,
+) -> Result<MmapMut, Error> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(file_path)?;
     file.set_len(size)?;
-    let memory_map = unsafe { MmapMut::map_mut(&file)? };
-    Ok(memory_map)
+    unsafe { MmapMut::map_mut(&file) }
 }
 
-pub fn write_u64(buffer: &mut MmapMut, offset: u64, value: u64) -> bool {
-    let mut cursor = io::Cursor::new(&mut buffer[..HEADER_SIZE]);
-    cursor.set_position(offset);
-    let result = cursor.write_all(&value.to_le_bytes());
-    match result {
-        Err(e) => {
-            error!("Error writing u64 at offset {}: {}", offset, e);
-            false
-        }
-        Ok(_) => true,
+pub fn open_existing_memory_mapped_file(
+    file_path: impl AsRef<Path>,
+    expected_size: u64,
+) -> Result<MmapMut, Error> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(file_path.as_ref())?;
+    let actual_size = file.metadata()?.len();
+    if actual_size != expected_size {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "memory-mapped file {:?} has size {actual_size}, expected {expected_size}",
+                file_path.as_ref()
+            ),
+        ));
     }
-}
-
-pub fn read_u64(buffer: &MmapMut, offset: u64) -> Option<u64> {
-    let mut cursor = io::Cursor::new(&buffer[..HEADER_SIZE]);
-    cursor.set_position(offset);
-    let result = cursor.read_u64::<LittleEndian>();
-    match result {
-        Err(e) => {
-            error!("Error reading u64 at offset {}: {}", offset, e);
-            None
-        }
-        Ok(value) => Some(value),
-    }
+    unsafe { MmapMut::map_mut(&file) }
 }
 
 pub const HEADER_SIZE: usize = 32;

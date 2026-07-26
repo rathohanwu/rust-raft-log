@@ -264,6 +264,83 @@ fn truncating_across_segments_removes_obsolete_files_before_reopen() {
 }
 
 #[test]
+fn truncating_within_a_segment_recovers_after_reopen() {
+    let temp_dir = TempDir::new().expect("create temp directory");
+    let config = RaftLogConfig {
+        log_directory: temp_dir.path().join("logs"),
+        segment_size: 256,
+        max_entries_per_query: 10,
+    };
+
+    {
+        let mut log = RaftLog::new(config.clone()).expect("create log");
+        for index in 1..=5 {
+            log.append_entry(LogEntry::new_with_type(
+                1,
+                index,
+                EntryType::Normal,
+                vec![index as u8; 40],
+            ))
+            .expect("append original entry");
+        }
+        assert!(log.segment_count() >= 2);
+
+        assert!(log.truncate_from(2).expect("truncate in segment"));
+        log.append_entry(LogEntry::new_with_type(
+            2,
+            0,
+            EntryType::Normal,
+            b"replacement-2".to_vec(),
+        ))
+        .expect("append replacement 2");
+        log.append_entry(LogEntry::new_with_type(
+            2,
+            0,
+            EntryType::Normal,
+            b"replacement-3".to_vec(),
+        ))
+        .expect("append replacement 3");
+    }
+
+    let reopened = RaftLog::new(config).expect("reopen replacement log");
+    assert_eq!(reopened.len(), 3);
+    assert_eq!(reopened.get_entry(1).unwrap().term, 1);
+    assert_eq!(reopened.get_entry(2).unwrap().term, 2);
+    assert_eq!(reopened.get_entry(2).unwrap().payload, b"replacement-2");
+    assert_eq!(reopened.get_entry(3).unwrap().payload, b"replacement-3");
+    assert!(reopened.get_entry(4).is_none());
+}
+
+#[test]
+fn reopening_with_a_different_segment_size_preserves_existing_files() {
+    let temp_dir = TempDir::new().expect("create temp directory");
+    let log_directory = temp_dir.path().join("logs");
+    let original = RaftLogConfig {
+        log_directory: log_directory.clone(),
+        segment_size: 256,
+        max_entries_per_query: 10,
+    };
+
+    {
+        let mut log = RaftLog::new(original).expect("create log");
+        log.append_entry(LogEntry::new_with_type(
+            1,
+            0,
+            EntryType::Normal,
+            b"durable entry".to_vec(),
+        ))
+        .expect("append entry");
+    }
+
+    let mismatched = RaftLogConfig {
+        log_directory,
+        segment_size: 512,
+        max_entries_per_query: 10,
+    };
+    assert!(RaftLog::new(mismatched).is_err());
+}
+
+#[test]
 fn test_segment_rotation() {
     let config = create_inspectable_test_config("segment_rotation");
     let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");

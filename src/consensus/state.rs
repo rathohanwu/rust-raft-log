@@ -1,6 +1,6 @@
 use crate::models::{NodeId, RaftStateError, ServerState};
 use crate::storage::mmap_utils::MemoryMapUtil;
-use crate::storage::utils::create_memory_mapped_file;
+use crate::storage::utils::{create_new_memory_mapped_file, open_existing_memory_mapped_file};
 use memmap2::MmapMut;
 use std::path::Path;
 
@@ -39,13 +39,8 @@ pub struct RaftState {
 impl RaftState {
     /// Creates a new RaftState with default values
     pub fn new<P: AsRef<Path>>(file_path: P) -> Result<Self, RaftStateError> {
-        let path_str = file_path
-            .as_ref()
-            .to_str()
-            .ok_or_else(|| RaftStateError::StateFileError("Invalid UTF-8 path".to_string()))?;
-
-        let buffer =
-            create_memory_mapped_file(path_str, RAFT_STATE_HEADER_SIZE as u64).map_err(|e| {
+        let buffer = create_new_memory_mapped_file(file_path, RAFT_STATE_HEADER_SIZE as u64)
+            .map_err(|e| {
                 RaftStateError::StateFileError(format!("Failed to create state file: {}", e))
             })?;
 
@@ -61,13 +56,8 @@ impl RaftState {
 
     /// Loads existing RaftState from file
     pub fn from_existing<P: AsRef<Path>>(file_path: P) -> Result<Self, RaftStateError> {
-        let path_str = file_path
-            .as_ref()
-            .to_str()
-            .ok_or_else(|| RaftStateError::StateFileError("Invalid UTF-8 path".to_string()))?;
-
-        let buffer =
-            create_memory_mapped_file(path_str, RAFT_STATE_HEADER_SIZE as u64).map_err(|e| {
+        let buffer = open_existing_memory_mapped_file(file_path, RAFT_STATE_HEADER_SIZE as u64)
+            .map_err(|e| {
                 RaftStateError::StateFileError(format!("Failed to open state file: {}", e))
             })?;
 
