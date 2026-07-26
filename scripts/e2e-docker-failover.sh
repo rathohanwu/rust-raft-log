@@ -26,7 +26,7 @@ echo "Building arithmetic-state Docker test node..."
 "${COMPOSE[@]}" build node1
 
 echo "Starting Raft nodes..."
-"${COMPOSE[@]}" up -d --wait node1 node2 node3
+"${COMPOSE[@]}" up -d --wait node1 node2 node3 node4 node5
 
 echo "Writing add(1)..."
 first_write=$("${COMPOSE[@]}" run --rm --no-deps raft-client \

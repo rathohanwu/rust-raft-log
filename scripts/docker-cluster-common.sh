@@ -14,9 +14,9 @@ export BUILDX_CONFIG=${BUILDX_CONFIG:-"$ARTIFACT_DIR/buildx"}
 require_node_id() {
   local node_id=${1:-}
   case "$node_id" in
-    1|2|3) ;;
+    1|2|3|4|5) ;;
     *)
-      echo "Usage: $0 <node-id: 1|2|3>" >&2
+      echo "Usage: $0 <node-id: 1|2|3|4|5>" >&2
       exit 2
       ;;
   esac

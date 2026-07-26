@@ -1,10 +1,13 @@
-.PHONY: e2e-docker e2e-docker-failover docker-cluster-up docker-cluster-apply-log docker-cluster-stop docker-cluster-start docker-cluster-down
+.PHONY: e2e-docker e2e-docker-failover e2e-5node docker-cluster-up docker-cluster-apply-log docker-cluster-stop docker-cluster-start docker-cluster-down
 
 e2e-docker:
 	scripts/e2e-docker.sh
 
 e2e-docker-failover:
 	scripts/e2e-docker-failover.sh
+
+e2e-5node:
+	scripts/e2e-5node.sh
 
 docker-cluster-up:
 	scripts/docker-cluster-up.sh

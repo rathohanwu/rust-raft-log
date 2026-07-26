@@ -6,6 +6,8 @@ volumes:
   data1: {}
   data2: {}
   data3: {}
+  data4: {}
+  data5: {}
 
 x-node: &node
   image: rust-raft-log:e2e
@@ -60,6 +62,34 @@ services:
       retries: 20
       start_period: 2s
       # P1 swap: ["CMD", "raft-probe", "127.0.0.1:18003"]
+
+  node4:
+    <<: *node
+    command: ["--node-id", "4", "--config", "/etc/raft/cluster.docker.yaml"]
+    volumes:
+      - data4:/var/lib/raft
+      - ./config:/etc/raft:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "18004"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+      start_period: 2s
+      # P1 swap: ["CMD", "raft-probe", "127.0.0.1:18004"]
+
+  node5:
+    <<: *node
+    command: ["--node-id", "5", "--config", "/etc/raft/cluster.docker.yaml"]
+    volumes:
+      - data5:/var/lib/raft
+      - ./config:/etc/raft:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "18005"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+      start_period: 2s
+      # P1 swap: ["CMD", "raft-probe", "127.0.0.1:18005"]
 
   raft-client:
     image: rust-raft-log:e2e
