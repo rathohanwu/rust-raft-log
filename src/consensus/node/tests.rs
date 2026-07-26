@@ -162,8 +162,66 @@ fn missing_committed_entry_stops_node_and_prevents_success_reply() {
 
     assert!(node.is_stopped());
     assert_eq!(node.get_state().last_applied, 0);
-    let response = node.finish_append_entries(0, false, false, 1, true);
+    let response = node.handle_append_entries(AppendEntriesRequest::heartbeat(0, 2, 0, 0, 1));
     assert!(!response.success);
+}
+
+#[test]
+fn higher_term_responses_clear_volatile_role_state() {
+    let (mut candidate, _candidate_dir) = create_test_node(1);
+    let vote_request = candidate.create_vote_request().unwrap();
+    candidate.next_index.insert(2, 3);
+    candidate.match_index.insert(2, 2);
+    candidate.current_leader = Some(2);
+
+    assert!(
+        !candidate.handle_vote_response(2, RequestVoteResponse::deny_vote(vote_request.term + 1),)
+    );
+    assert_eq!(candidate.get_current_term(), vote_request.term + 1);
+    assert_eq!(candidate.get_server_state(), ServerState::Follower);
+    assert!(candidate.votes_received.is_empty());
+    assert!(candidate.next_index.is_empty());
+    assert!(candidate.match_index.is_empty());
+    assert_eq!(candidate.current_leader, None);
+
+    let (mut leader, _leader_dir) = create_test_node(1);
+    let election = leader.create_vote_request().unwrap();
+    assert!(leader.handle_vote_response(2, RequestVoteResponse::grant_vote(election.term)));
+    leader.votes_received.insert(1);
+
+    let request = leader
+        .build_replication_requests()
+        .into_iter()
+        .find(|(node_id, _)| *node_id == 2)
+        .unwrap()
+        .1;
+    assert!(!leader.handle_append_entries_response(
+        2,
+        &request,
+        AppendEntriesResponse::failure(election.term + 1, Some(0)),
+    ));
+    assert_eq!(leader.get_current_term(), election.term + 1);
+    assert_eq!(leader.get_server_state(), ServerState::Follower);
+    assert!(leader.votes_received.is_empty());
+    assert!(leader.next_index.is_empty());
+    assert!(leader.match_index.is_empty());
+    assert_eq!(leader.current_leader, None);
+}
+
+#[test]
+fn newer_term_consistency_rejection_persists_the_new_term() {
+    let (mut node, _temp_dir) = create_test_node(1);
+    let state_path = node.config.meta_file_path.clone();
+
+    let response = node.handle_append_entries(AppendEntriesRequest::heartbeat(2, 2, 1, 1, 0));
+
+    assert!(!response.success);
+    assert_eq!(response.term, 2);
+    assert_eq!(node.get_current_term(), 2);
+
+    drop(node);
+    let reloaded = RaftState::from_existing(state_path).expect("reload persisted Raft state");
+    assert_eq!(reloaded.get_current_term(), 2);
 }
 
 #[test]
@@ -193,6 +251,7 @@ fn test_create_vote_request() {
     // Check node state after creating vote request
     assert_eq!(node.get_current_term(), 1);
     assert_eq!(node.get_server_state(), ServerState::Candidate);
+    assert_eq!(node.get_state().voted_for, Some(1));
 
     // Check request content
     assert_eq!(request.term, 1);
@@ -226,6 +285,16 @@ fn test_become_leader() {
         assert!(!request.is_heartbeat());
         assert_eq!(request.entries.len(), 1); // Just the NoOp entry
     }
+}
+
+#[test]
+fn stopped_node_does_not_report_an_election_win() {
+    let (mut node, _temp_dir) = create_test_node(1);
+    let request = node.create_vote_request().unwrap();
+    node.stopped = true;
+
+    assert!(!node.handle_vote_response(2, RequestVoteResponse::grant_vote(request.term)));
+    assert_ne!(node.get_server_state(), ServerState::Leader);
 }
 
 #[test]
