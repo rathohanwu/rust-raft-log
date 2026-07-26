@@ -51,10 +51,8 @@ async fn e2e_follower_redirect_failover_completeness_and_rejoin() {
         .wait_for_committed_convergence(Duration::from_secs(5))
         .await;
     let restarted = cluster.node_view(leader);
-    let restarted = restarted.lock().unwrap();
     assert_eq!(restarted.get_server_state(), ServerState::Follower);
     let commit_index = restarted.get_state().commit_index;
-    drop(restarted);
     assert_eq!(cluster.committed_log(leader, commit_index), converged);
     cluster
         .wait_for_arithmetic_state(

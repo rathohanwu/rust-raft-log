@@ -5,8 +5,8 @@ use std::net::TcpListener as StdTcpListener;
 use std::sync::{Arc, Mutex};
 
 use raft_log::{
-    ClusterConfig, EntryType, LogEntry, NodeId, NodeInfo, RaftGrpcClient, RaftGrpcServer, RaftNode,
-    RaftNodeView, ServerState, StateMachine,
+    ClusterConfig, EntryType, LogEntry, NodeId, NodeInfo, RaftGrpcClient, RaftNode, RaftNodeView,
+    RaftRuntime, ServerState, StateMachine,
 };
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -114,8 +114,7 @@ pub enum ClientOutcome {
 
 struct NodeRuntime {
     config: ClusterConfig,
-    server: RaftGrpcServer,
-    event_loop: Option<JoinHandle<()>>,
+    runtime: RaftRuntime,
     grpc_server: Option<JoinHandle<Result<(), tonic::transport::Error>>>,
 }
 
@@ -151,7 +150,7 @@ impl TestCluster {
                 value: 0,
                 applied_commands: 0,
             }));
-            let server = RaftGrpcServer::new(
+            let runtime = RaftRuntime::new(
                 RaftNode::new_with_state_machine(
                     config.clone(),
                     Box::new(ArithmeticStateMachine {
@@ -166,8 +165,7 @@ impl TestCluster {
                 id,
                 NodeRuntime {
                     config,
-                    server,
-                    event_loop: None,
+                    runtime,
                     grpc_server: None,
                 },
             );
@@ -210,9 +208,7 @@ impl TestCluster {
         listener.set_nonblocking(true).unwrap();
         let listener = tokio::net::TcpListener::from_std(listener).unwrap();
         let runtime = self.runtimes.get_mut(&id).unwrap();
-        let (event_loop, grpc_server) = runtime.server.start_with_listener(listener);
-        runtime.event_loop = Some(event_loop);
-        runtime.grpc_server = Some(grpc_server);
+        runtime.grpc_server = Some(runtime.runtime.serve_with_listener(listener));
         self.active_nodes.insert(id);
     }
 
@@ -228,8 +224,8 @@ impl TestCluster {
         ids
     }
 
-    pub fn node_view(&self, id: NodeId) -> Arc<Mutex<RaftNodeView>> {
-        self.runtimes.get(&id).unwrap().server.node_view()
+    pub fn node_view(&self, id: NodeId) -> RaftNodeView {
+        self.runtimes.get(&id).unwrap().runtime.node_view()
     }
 
     pub async fn wait_for_leader(&self, timeout: Duration) -> (NodeId, u64) {
@@ -240,7 +236,6 @@ impl TestCluster {
                 .into_iter()
                 .filter_map(|id| {
                     let node = self.node_view(id);
-                    let node = node.lock().unwrap();
                     (node.get_server_state() == ServerState::Leader)
                         .then_some((id, node.get_current_term()))
                 })
@@ -248,7 +243,6 @@ impl TestCluster {
             if leaders.len() == 1 {
                 let (leader_id, term) = leaders[0];
                 let node = self.node_view(leader_id);
-                let node = node.lock().unwrap();
                 let commit_index = node.get_state().commit_index;
                 let established = commit_index > 0
                     && node
@@ -329,13 +323,8 @@ impl TestCluster {
     pub async fn kill(&mut self, id: NodeId) {
         self.active_nodes.remove(&id);
         let runtime = self.runtimes.get_mut(&id).unwrap();
-        runtime.server.shutdown();
-        if let Some(handle) = runtime.event_loop.take() {
-            handle.abort();
-            let _ = handle.await;
-        }
+        runtime.runtime.shutdown();
         if let Some(handle) = runtime.grpc_server.take() {
-            handle.abort();
             let _ = handle.await;
         }
     }
@@ -348,7 +337,7 @@ impl TestCluster {
             value: 0,
             applied_commands: 0,
         };
-        runtime.server = RaftGrpcServer::new(
+        runtime.runtime = RaftRuntime::new(
             RaftNode::new_with_state_machine(
                 runtime.config.clone(),
                 Box::new(ArithmeticStateMachine { state }),
@@ -365,7 +354,6 @@ impl TestCluster {
 
     pub fn committed_log(&self, id: NodeId, upper_bound: u64) -> Vec<EntryView> {
         let node = self.node_view(id);
-        let node = node.lock().unwrap();
         (1..=upper_bound)
             .filter_map(|index| node.get_entry(index))
             .map(entry_view)
@@ -409,7 +397,7 @@ impl TestCluster {
             let ids = self.active_node_ids();
             let commit_index = ids
                 .iter()
-                .map(|&id| self.node_view(id).lock().unwrap().get_state().commit_index)
+                .map(|&id| self.node_view(id).get_state().commit_index)
                 .min()
                 .unwrap();
             let logs: Vec<_> = ids

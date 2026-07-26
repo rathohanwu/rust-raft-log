@@ -17,12 +17,12 @@ use crate::models::{
 pub(crate) enum Event {
     Tick,
     RequestVote {
-        rpc_id: u64,
         request: RequestVoteRequest,
+        reply: oneshot::Sender<RequestVoteResponse>,
     },
     AppendEntries {
-        rpc_id: u64,
         request: AppendEntriesRequest,
+        reply: oneshot::Sender<AppendEntriesResponse>,
     },
     VoteResponse {
         from: NodeId,
@@ -36,6 +36,7 @@ pub(crate) enum Event {
     ClientProposal {
         request_id: u64,
         payload: Vec<u8>,
+        reply: oneshot::Sender<ClientResult>,
     },
     CancelClientRequest {
         request_id: u64,
@@ -44,24 +45,6 @@ pub(crate) enum Event {
 
 pub(crate) enum Command {
     Event(Event),
-    RequestVote {
-        rpc_id: u64,
-        request: RequestVoteRequest,
-        response: oneshot::Sender<RequestVoteResponse>,
-    },
-    AppendEntries {
-        rpc_id: u64,
-        request: AppendEntriesRequest,
-        response: oneshot::Sender<AppendEntriesResponse>,
-    },
-    ClientProposal {
-        request_id: u64,
-        payload: Vec<u8>,
-        response: oneshot::Sender<ClientResult>,
-    },
-    CancelClientRequest {
-        request_id: u64,
-    },
     Query {
         response: mpsc::Sender<NodeViewData>,
     },
@@ -70,6 +53,12 @@ pub(crate) enum Command {
         response: mpsc::Sender<Option<crate::models::LogEntry>>,
     },
     Shutdown,
+}
+
+struct Waiter {
+    term: u64,
+    index: u64,
+    reply: oneshot::Sender<ClientResult>,
 }
 
 pub struct RaftActor {
@@ -81,10 +70,7 @@ pub struct RaftActor {
     leader: Arc<RwLock<Option<NodeId>>>,
     runtime: Handle,
     client: RaftGrpcClient,
-    vote_replies: HashMap<u64, oneshot::Sender<RequestVoteResponse>>,
-    append_replies: HashMap<u64, oneshot::Sender<AppendEntriesResponse>>,
-    pending: HashMap<u64, oneshot::Sender<ClientResult>>,
-    waiters: HashMap<u64, (u64, u64, oneshot::Sender<ClientResult>)>,
+    waiters: HashMap<u64, Waiter>,
     election_deadline: Instant,
     heartbeat_deadline: Instant,
 }
@@ -141,9 +127,6 @@ impl RaftActor {
             snapshot,
             leader,
             runtime,
-            vote_replies: HashMap::new(),
-            append_replies: HashMap::new(),
-            pending: HashMap::new(),
             waiters: HashMap::new(),
             election_deadline,
             heartbeat_deadline,
@@ -187,36 +170,6 @@ impl RaftActor {
     fn handle(&mut self, command: Command) -> bool {
         match command {
             Command::Event(event) => self.drive(event),
-            Command::RequestVote {
-                rpc_id,
-                request,
-                response,
-            } => {
-                self.vote_replies.insert(rpc_id, response);
-                self.drive(Event::RequestVote { rpc_id, request });
-            }
-            Command::AppendEntries {
-                rpc_id,
-                request,
-                response,
-            } => {
-                self.append_replies.insert(rpc_id, response);
-                self.drive(Event::AppendEntries { rpc_id, request });
-            }
-            Command::ClientProposal {
-                request_id,
-                payload,
-                response,
-            } => {
-                self.pending.insert(request_id, response);
-                self.drive(Event::ClientProposal {
-                    request_id,
-                    payload,
-                });
-            }
-            Command::CancelClientRequest { request_id } => {
-                self.drive(Event::CancelClientRequest { request_id })
-            }
             Command::Query { response } => {
                 let _ = response.send(NodeViewData {
                     log_length: self.node.get_log_length(),
@@ -235,23 +188,19 @@ impl RaftActor {
         let state_before = self.node.get_state();
         match event {
             Event::Tick => self.tick(),
-            Event::RequestVote { rpc_id, request } => {
+            Event::RequestVote { request, reply } => {
                 let response = self.node.handle_request_vote(request);
                 if response.vote_granted {
                     self.reset_election();
                 }
-                if let Some(reply) = self.vote_replies.remove(&rpc_id) {
-                    let _ = reply.send(response);
-                }
+                let _ = reply.send(response);
             }
-            Event::AppendEntries { rpc_id, request } => {
+            Event::AppendEntries { request, reply } => {
                 let response = self.node.handle_append_entries(request);
                 if response.success {
                     self.reset_election();
                 }
-                if let Some(reply) = self.append_replies.remove(&rpc_id) {
-                    let _ = reply.send(response);
-                }
+                let _ = reply.send(response);
             }
             Event::VoteResponse { from, response } => {
                 if self.node.handle_vote_response(from, response) {
@@ -274,9 +223,9 @@ impl RaftActor {
             Event::ClientProposal {
                 request_id,
                 payload,
-            } => self.propose(request_id, payload),
+                reply,
+            } => self.propose(request_id, payload, reply),
             Event::CancelClientRequest { request_id } => {
-                self.pending.remove(&request_id);
                 self.waiters.remove(&request_id);
             }
         }
@@ -310,57 +259,39 @@ impl RaftActor {
     fn reset_election(&mut self) {
         self.election_deadline = Instant::now() + Self::election_timeout(&self.config);
     }
-    fn propose(&mut self, request_id: u64, payload: Vec<u8>) {
+    fn propose(&mut self, request_id: u64, payload: Vec<u8>, reply: oneshot::Sender<ClientResult>) {
         if self.node.get_server_state() != ServerState::Leader {
-            self.reject(request_id, "Not the leader");
+            Self::reject(reply, "Not the leader");
             return;
         }
         match self.node.append_new_entry(payload) {
             Ok(index) => {
                 let term = self.node.get_current_term();
-                if let Some(waiter) = self.pending.remove(&request_id) {
-                    self.waiters.insert(request_id, (term, index, waiter));
-                }
+                self.waiters
+                    .insert(request_id, Waiter { term, index, reply });
                 self.send_replication();
             }
-            Err(error) => self.reject(request_id, &format!("Failed to append entry: {error}")),
+            Err(error) => Self::reject(reply, &format!("Failed to append entry: {error}")),
         }
     }
-    fn reject(&mut self, request_id: u64, message: &str) {
-        if let Some(reply) = self.pending.remove(&request_id) {
-            let _ = reply.send(Err(message.into()));
-        }
+    fn reject(reply: oneshot::Sender<ClientResult>, message: &str) {
+        let _ = reply.send(Err(message.into()));
     }
     fn complete_committed(&mut self, commit: u64) {
-        let ready: Vec<_> = self
-            .waiters
-            .iter()
-            .filter_map(|(&id, &(_, index, _))| (index <= commit).then_some(id))
-            .collect();
-        for id in ready {
-            if let Some((term, index, reply)) = self.waiters.remove(&id) {
-                let _ = reply.send(Ok((term, index)));
-            }
+        for (_, waiter) in self.waiters.extract_if(|_, waiter| waiter.index <= commit) {
+            let _ = waiter.reply.send(Ok((waiter.term, waiter.index)));
         }
     }
     fn fail_term(&mut self, term: u64) {
-        let stale: Vec<_> = self
-            .waiters
-            .iter()
-            .filter_map(|(&id, &(waiter_term, _, _))| (waiter_term == term).then_some(id))
-            .collect();
-        for id in stale {
-            if let Some((_, _, reply)) = self.waiters.remove(&id) {
-                let _ = reply.send(Err("Leadership changed before the entry committed".into()));
-            }
+        for (_, waiter) in self.waiters.extract_if(|_, waiter| waiter.term == term) {
+            let _ = waiter
+                .reply
+                .send(Err("Leadership changed before the entry committed".into()));
         }
     }
     fn fail_all(&mut self, message: &str) {
-        for (_, reply) in self.pending.drain() {
-            let _ = reply.send(Err(message.into()));
-        }
-        for (_, (_, _, reply)) in self.waiters.drain() {
-            let _ = reply.send(Err(message.into()));
+        for (_, waiter) in self.waiters.drain() {
+            let _ = waiter.reply.send(Err(message.into()));
         }
     }
 

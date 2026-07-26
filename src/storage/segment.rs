@@ -195,7 +195,7 @@ impl LogFileSegment {
         let base_index = self.get_base_index();
         let actual_index = search_index.checked_sub(base_index)? + 1;
 
-        if actual_index <= 0 || actual_index > entry_count {
+        if actual_index == 0 || actual_index > entry_count {
             return None;
         }
 

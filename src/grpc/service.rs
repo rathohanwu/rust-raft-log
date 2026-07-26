@@ -4,36 +4,51 @@ use crate::models::types_proto::{
     ClientRequestMessage, ClientResponseMessage, ProtoAppendEntriesRequest,
     ProtoAppendEntriesResponse, ProtoRequestVoteRequest, ProtoRequestVoteResponse,
 };
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
-};
+use crate::models::NodeId;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
 use tonic::{Request, Response, Status};
 
+const COMMIT_WAIT: Duration = Duration::from_secs(2);
+
 pub struct RaftGrpcService {
     raft_handle: RaftHandle,
-    available: Arc<AtomicBool>,
-    next_rpc_id: AtomicU64,
+    shutdown_rx: watch::Receiver<bool>,
     next_client_request_id: AtomicU64,
 }
 impl RaftGrpcService {
-    pub fn new(raft_handle: RaftHandle, available: Arc<AtomicBool>) -> Self {
+    pub fn new(raft_handle: RaftHandle, shutdown_rx: watch::Receiver<bool>) -> Self {
         Self {
             raft_handle,
-            available,
-            next_rpc_id: AtomicU64::new(1),
+            shutdown_rx,
             next_client_request_id: AtomicU64::new(1),
         }
     }
     fn available(&self) -> Result<(), Status> {
-        self.available
-            .load(Ordering::Acquire)
-            .then_some(())
-            .ok_or_else(|| Status::unavailable("Raft node is shut down"))
+        if *self.shutdown_rx.borrow() {
+            Err(Status::unavailable("Raft node is shut down"))
+        } else {
+            Ok(())
+        }
     }
-    fn id(counter: &AtomicU64) -> u64 {
-        counter.fetch_add(1, Ordering::Relaxed).max(1)
+
+    fn committed(leader_id: NodeId, log_index: u64) -> ClientResponseMessage {
+        ClientResponseMessage {
+            success: true,
+            leader_id,
+            log_index,
+            error_message: String::new(),
+        }
+    }
+
+    fn failed(leader_id: NodeId, error_message: impl Into<String>) -> ClientResponseMessage {
+        ClientResponseMessage {
+            success: false,
+            leader_id,
+            log_index: 0,
+            error_message: error_message.into(),
+        }
     }
 }
 #[tonic::async_trait]
@@ -45,7 +60,7 @@ impl RaftService for RaftGrpcService {
         self.available()?;
         Ok(Response::new(
             self.raft_handle
-                .request_vote(Self::id(&self.next_rpc_id), request.into_inner().into())
+                .request_vote(request.into_inner().into())
                 .await
                 .map_err(Status::unavailable)?
                 .into(),
@@ -58,7 +73,7 @@ impl RaftService for RaftGrpcService {
         self.available()?;
         Ok(Response::new(
             self.raft_handle
-                .append_entries(Self::id(&self.next_rpc_id), request.into_inner().into())
+                .append_entries(request.into_inner().into())
                 .await
                 .map_err(Status::unavailable)?
                 .into(),
@@ -69,34 +84,24 @@ impl RaftService for RaftGrpcService {
         request: Request<ClientRequestMessage>,
     ) -> Result<Response<ClientResponseMessage>, Status> {
         self.available()?;
-        let id = Self::id(&self.next_client_request_id);
-        let raft_handle = self.raft_handle.clone();
+        let id = self
+            .next_client_request_id
+            .fetch_add(1, Ordering::Relaxed)
+            .max(1);
         let result = timeout(
-            Duration::from_secs(2),
-            raft_handle.propose(id, request.into_inner().payload),
+            COMMIT_WAIT,
+            self.raft_handle.propose(id, request.into_inner().payload),
         )
         .await;
         let response = match result {
-            Ok(Ok((_term, index))) => ClientResponseMessage {
-                success: true,
-                leader_id: self.raft_handle.node_id(),
-                log_index: index,
-                error_message: String::new(),
-            },
-            Ok(Err(error)) => ClientResponseMessage {
-                success: false,
-                leader_id: self.raft_handle.leader_id().unwrap_or(0),
-                log_index: 0,
-                error_message: error,
-            },
+            Ok(Ok((_term, index))) => Self::committed(self.raft_handle.node_id(), index),
+            Ok(Err(error)) => Self::failed(self.raft_handle.leader_id().unwrap_or(0), error),
             Err(_) => {
                 self.raft_handle.cancel_client_request(id);
-                ClientResponseMessage {
-                    success: false,
-                    leader_id: self.raft_handle.leader_id().unwrap_or(0),
-                    log_index: 0,
-                    error_message: "Timed out waiting for the entry to commit".into(),
-                }
+                Self::failed(
+                    self.raft_handle.leader_id().unwrap_or(0),
+                    "Timed out waiting for the entry to commit",
+                )
             }
         };
         Ok(Response::new(response))

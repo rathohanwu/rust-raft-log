@@ -2,6 +2,7 @@
 name = "rust-raft-log"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 authors = ["Your Name <your.email@example.com>"]
 description = "A high-performance Raft log implementation in Rust"
 license = "MIT OR Apache-2.0"

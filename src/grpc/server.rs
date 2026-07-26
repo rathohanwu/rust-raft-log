@@ -1,8 +1,6 @@
 use log::info;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::future::Future;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -13,30 +11,41 @@ use super::proto::raft_service_server::RaftServiceServer;
 use super::service::RaftGrpcService;
 use crate::{consensus::RaftNode, models::ClusterConfig};
 
-/// gRPC server backed by a single actor that exclusively owns RaftNode.
-pub struct RaftGrpcServer {
+/// Owns a Raft actor and the gRPC services that expose it.
+///
+/// The runtime can be embedded in another tonic server through
+/// [`Self::grpc_service`], or it can bind and serve its configured address with
+/// [`Self::serve`]. Shutting it down stops both the actor and any server started
+/// through this runtime.
+#[derive(Clone)]
+pub struct RaftRuntime {
     raft_handle: RaftHandle,
     config: ClusterConfig,
-    available: Arc<AtomicBool>,
+    shutdown_tx: watch::Sender<bool>,
 }
 
-impl RaftGrpcServer {
+impl RaftRuntime {
     pub fn new(node: RaftNode) -> Self {
         let config = node.get_config().clone();
         let raft_handle = RaftActor::spawn(node);
+        let (shutdown_tx, _) = watch::channel(false);
         Self {
             raft_handle,
             config,
-            available: Arc::new(AtomicBool::new(true)),
+            shutdown_tx,
         }
     }
-    fn service(&self) -> RaftServiceServer<RaftGrpcService> {
+
+    /// Returns the tonic service backed by this runtime's Raft actor.
+    pub fn grpc_service(&self) -> RaftServiceServer<RaftGrpcService> {
         RaftServiceServer::new(RaftGrpcService::new(
             self.raft_handle.clone(),
-            Arc::clone(&self.available),
+            self.shutdown_tx.subscribe(),
         ))
     }
-    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+
+    /// Serves the configured node address until [`Self::shutdown`] is called.
+    pub async fn serve(&self) -> Result<(), Box<dyn std::error::Error>> {
         let node = self
             .config
             .get_this_node()
@@ -44,44 +53,43 @@ impl RaftGrpcServer {
         let addr = format!("0.0.0.0:{}", node.port).parse()?;
         info!("Starting Raft gRPC server on {}", addr);
         Server::builder()
-            .add_service(self.service())
-            .serve(addr)
+            .add_service(self.grpc_service())
+            .serve_with_shutdown(addr, self.shutdown_signal())
             .await?;
         self.shutdown();
         Ok(())
     }
-    pub fn start_with_listener(
+
+    /// Serves an already-bound listener until [`Self::shutdown`] is called.
+    pub fn serve_with_listener(
         &self,
         listener: tokio::net::TcpListener,
-    ) -> (
-        JoinHandle<()>,
-        JoinHandle<Result<(), tonic::transport::Error>>,
-    ) {
-        let service = self.service();
-        (
-            tokio::spawn(async {}),
-            tokio::spawn(async move {
-                Server::builder()
-                    .add_service(service)
-                    .serve_with_incoming(TcpListenerStream::new(listener))
-                    .await
-            }),
-        )
+    ) -> JoinHandle<Result<(), tonic::transport::Error>> {
+        let service = self.grpc_service();
+        let shutdown = self.shutdown_signal();
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
+                .await
+        })
     }
-    pub fn node_view(&self) -> Arc<Mutex<RaftNodeView>> {
+
+    pub fn node_view(&self) -> RaftNodeView {
         self.raft_handle.node_view()
     }
+
     pub fn shutdown(&self) {
-        self.available.store(false, Ordering::Release);
+        self.shutdown_tx.send_replace(true);
         self.raft_handle.shutdown();
     }
-}
-impl Clone for RaftGrpcServer {
-    fn clone(&self) -> Self {
-        Self {
-            raft_handle: self.raft_handle.clone(),
-            config: self.config.clone(),
-            available: Arc::clone(&self.available),
+
+    fn shutdown_signal(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+        async move {
+            if !*shutdown_rx.borrow() {
+                let _ = shutdown_rx.changed().await;
+            }
         }
     }
 }

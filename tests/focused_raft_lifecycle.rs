@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use tokio::time::{sleep, timeout, Duration};
 
-use raft_log::{ClusterConfig, NodeInfo, RaftGrpcClient, RaftGrpcServer, RaftNode, ServerState};
+use raft_log::{ClusterConfig, NodeInfo, RaftGrpcClient, RaftNode, RaftRuntime, ServerState};
 
 /// Focused integration test that validates core Raft consensus lifecycle
 /// This test is more robust against leader churn and focuses on key properties
@@ -92,9 +92,9 @@ async fn test_focused_raft_lifecycle() {
     let raft_node3 = RaftNode::new(config3).expect("Failed to create RaftNode 3");
 
     // Create gRPC servers (timing is now configured in ClusterConfig)
-    let server1 = RaftGrpcServer::new(raft_node1);
-    let server2 = RaftGrpcServer::new(raft_node2);
-    let server3 = RaftGrpcServer::new(raft_node3);
+    let server1 = RaftRuntime::new(raft_node1);
+    let server2 = RaftRuntime::new(raft_node2);
+    let server3 = RaftRuntime::new(raft_node3);
 
     // Get references for monitoring
     let server1_node_view = server1.node_view();
@@ -104,15 +104,15 @@ async fn test_focused_raft_lifecycle() {
     // Run each server in the background so this test can drive the cluster.
     let server_handle1 = tokio::spawn({
         let server = server1.clone();
-        async move { server.start().await.expect("Failed to start server 1") }
+        async move { server.serve().await.expect("Failed to start server 1") }
     });
     let server_handle2 = tokio::spawn({
         let server = server2.clone();
-        async move { server.start().await.expect("Failed to start server 2") }
+        async move { server.serve().await.expect("Failed to start server 2") }
     });
     let server_handle3 = tokio::spawn({
         let server = server3.clone();
-        async move { server.start().await.expect("Failed to start server 3") }
+        async move { server.serve().await.expect("Failed to start server 3") }
     });
 
     println!("🌐 Started 3 gRPC servers on ports 20001, 20002, 20003");
@@ -123,9 +123,9 @@ async fn test_focused_raft_lifecycle() {
     // Helper function to find the current leader
     let find_leader = || -> Option<u32> {
         let states = [
-            (1, server1_node_view.lock().unwrap().get_server_state()),
-            (2, server2_node_view.lock().unwrap().get_server_state()),
-            (3, server3_node_view.lock().unwrap().get_server_state()),
+            (1, server1_node_view.get_server_state()),
+            (2, server2_node_view.get_server_state()),
+            (3, server3_node_view.get_server_state()),
         ];
 
         let leaders: Vec<u32> = states
@@ -180,9 +180,9 @@ async fn test_focused_raft_lifecycle() {
 
     // Verify exactly one leader and two followers
     let states = [
-        (1, server1_node_view.lock().unwrap().get_server_state()),
-        (2, server2_node_view.lock().unwrap().get_server_state()),
-        (3, server3_node_view.lock().unwrap().get_server_state()),
+        (1, server1_node_view.get_server_state()),
+        (2, server2_node_view.get_server_state()),
+        (3, server3_node_view.get_server_state()),
     ];
 
     let leader_count = states
@@ -264,9 +264,9 @@ async fn test_focused_raft_lifecycle() {
     if successful_appends > 0 {
         // Get the log length from each node
         let log_lengths = [
-            (1, server1_node_view.lock().unwrap().get_log_length()),
-            (2, server2_node_view.lock().unwrap().get_log_length()),
-            (3, server3_node_view.lock().unwrap().get_log_length()),
+            (1, server1_node_view.get_log_length()),
+            (2, server2_node_view.get_log_length()),
+            (3, server3_node_view.get_log_length()),
         ];
 
         println!(
@@ -289,9 +289,9 @@ async fn test_focused_raft_lifecycle() {
         // Verify that all nodes have the same entries by checking each entry
         for entry_index in 1..=expected_length {
             let entries = [
-                (1, server1_node_view.lock().unwrap().get_entry(entry_index)),
-                (2, server2_node_view.lock().unwrap().get_entry(entry_index)),
-                (3, server3_node_view.lock().unwrap().get_entry(entry_index)),
+                (1, server1_node_view.get_entry(entry_index)),
+                (2, server2_node_view.get_entry(entry_index)),
+                (3, server3_node_view.get_entry(entry_index)),
             ];
 
             // All entries at this index should be identical
@@ -357,9 +357,9 @@ async fn test_focused_raft_lifecycle() {
             // Check each node has the correct payload
             for node_id in [1, 2, 3] {
                 let entry = match node_id {
-                    1 => server1_node_view.lock().unwrap().get_entry(entry_index),
-                    2 => server2_node_view.lock().unwrap().get_entry(entry_index),
-                    3 => server3_node_view.lock().unwrap().get_entry(entry_index),
+                    1 => server1_node_view.get_entry(entry_index),
+                    2 => server2_node_view.get_entry(entry_index),
+                    3 => server3_node_view.get_entry(entry_index),
                     _ => unreachable!(),
                 };
 
@@ -437,16 +437,16 @@ async fn test_focused_raft_lifecycle() {
             // Check remaining nodes for new leader
             let remaining_states = match stable_leader_id {
                 1 => vec![
-                    (2, server2_node_view.lock().unwrap().get_server_state()),
-                    (3, server3_node_view.lock().unwrap().get_server_state()),
+                    (2, server2_node_view.get_server_state()),
+                    (3, server3_node_view.get_server_state()),
                 ],
                 2 => vec![
-                    (1, server1_node_view.lock().unwrap().get_server_state()),
-                    (3, server3_node_view.lock().unwrap().get_server_state()),
+                    (1, server1_node_view.get_server_state()),
+                    (3, server3_node_view.get_server_state()),
                 ],
                 3 => vec![
-                    (1, server1_node_view.lock().unwrap().get_server_state()),
-                    (2, server2_node_view.lock().unwrap().get_server_state()),
+                    (1, server1_node_view.get_server_state()),
+                    (2, server2_node_view.get_server_state()),
                 ],
                 _ => panic!("Invalid leader ID"),
             };
@@ -480,24 +480,24 @@ async fn test_focused_raft_lifecycle() {
             // Verify we have 1 leader and 1 follower among remaining nodes
             let remaining_leader_count = match stable_leader_id {
                 1 => {
-                    let state2 = server2_node_view.lock().unwrap().get_server_state();
-                    let state3 = server3_node_view.lock().unwrap().get_server_state();
+                    let state2 = server2_node_view.get_server_state();
+                    let state3 = server3_node_view.get_server_state();
                     [state2, state3]
                         .iter()
                         .filter(|&&s| s == ServerState::Leader)
                         .count()
                 }
                 2 => {
-                    let state1 = server1_node_view.lock().unwrap().get_server_state();
-                    let state3 = server3_node_view.lock().unwrap().get_server_state();
+                    let state1 = server1_node_view.get_server_state();
+                    let state3 = server3_node_view.get_server_state();
                     [state1, state3]
                         .iter()
                         .filter(|&&s| s == ServerState::Leader)
                         .count()
                 }
                 3 => {
-                    let state1 = server1_node_view.lock().unwrap().get_server_state();
-                    let state2 = server2_node_view.lock().unwrap().get_server_state();
+                    let state1 = server1_node_view.get_server_state();
+                    let state2 = server2_node_view.get_server_state();
                     [state1, state2]
                         .iter()
                         .filter(|&&s| s == ServerState::Leader)
