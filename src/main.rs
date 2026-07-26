@@ -2,7 +2,7 @@ use clap::Parser;
 use log::{error, info};
 use std::process;
 
-use raft_log::{RaftGrpcServer, RaftNode, YamlClusterConfig};
+use raft_log::{RaftNode, RaftRuntime, YamlClusterConfig};
 
 #[derive(Parser)]
 #[command(name = "raft-node")]
@@ -72,15 +72,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("✅ Raft node created successfully");
 
-    // Create and start the gRPC server
-    let server = RaftGrpcServer::new(raft_node);
+    // Create the Raft runtime and serve its gRPC interface.
+    let runtime = RaftRuntime::new(raft_node);
 
     info!(
         "🌐 Starting gRPC server on {}",
         cluster_config.get_address()
     );
 
-    match server.start().await {
+    match runtime.serve().await {
         Ok(_) => info!("✅ Server started successfully"),
         Err(e) => {
             error!("❌ Failed to start server: {}", e);

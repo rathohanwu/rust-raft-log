@@ -10,16 +10,11 @@ async fn e2e_two_node_follower_loss_preserves_leader_but_loses_quorum() {
     let mut cluster = TestCluster::start(2).await;
     let (leader, _) = cluster.wait_for_leader(Duration::from_secs(5)).await;
     let follower = if leader == 1 { 2 } else { 1 };
-    let before = cluster
-        .node_view(leader)
-        .lock()
-        .unwrap()
-        .get_state()
-        .commit_index;
+    let before = cluster.node_view(leader).get_state().commit_index;
     cluster.kill(follower).await;
     sleep(Duration::from_millis(700)).await;
     assert_eq!(
-        cluster.node_view(leader).lock().unwrap().get_server_state(),
+        cluster.node_view(leader).get_server_state(),
         ServerState::Leader
     );
     assert!(matches!(
@@ -28,15 +23,7 @@ async fn e2e_two_node_follower_loss_preserves_leader_but_loses_quorum() {
             .await,
         ClientOutcome::TimedOut
     ));
-    assert_eq!(
-        cluster
-            .node_view(leader)
-            .lock()
-            .unwrap()
-            .get_state()
-            .commit_index,
-        before
-    );
+    assert_eq!(cluster.node_view(leader).get_state().commit_index, before);
     cluster.stop_all().await;
 }
 
@@ -49,11 +36,7 @@ async fn e2e_two_node_leader_loss_prevents_new_election() {
     cluster.kill(leader).await;
     sleep(Duration::from_secs(2)).await;
     assert_ne!(
-        cluster
-            .node_view(follower)
-            .lock()
-            .unwrap()
-            .get_server_state(),
+        cluster.node_view(follower).get_server_state(),
         ServerState::Leader
     );
     assert!(!matches!(

@@ -8,7 +8,7 @@ impl MemoryMapUtil {
     pub fn flush(memory_map: &mut MmapMut) -> io::Result<()> {
         memory_map.flush()
     }
-    pub fn write_vec_8(memory_map: &mut MmapMut, offset: usize, value: &Vec<u8>) {
+    pub fn write_vec_8(memory_map: &mut MmapMut, offset: usize, value: &[u8]) {
         memory_map[offset..offset + value.len()].copy_from_slice(value);
     }
 

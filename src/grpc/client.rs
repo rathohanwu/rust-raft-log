@@ -1,4 +1,3 @@
-use log::error;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,16 +81,11 @@ impl RaftGrpcClient {
         let proto_request: ProtoRequestVoteRequest = request.into();
         let mut request = Request::new(proto_request);
         request.set_timeout(RAFT_RPC_TIMEOUT);
-        let response = match client.request_vote(request).await {
-            Ok(response) => response,
-            Err(error) => {
-                self.close_connection(node_id).await;
-                return Err(error);
-            }
-        };
-
-        let rust_response: RequestVoteResponse = response.into_inner().into();
-        Ok(rust_response)
+        let response = client.request_vote(request).await;
+        if response.is_err() {
+            self.close_connection(node_id).await;
+        }
+        Ok(response?.into_inner().into())
     }
 
     /// Send an AppendEntries RPC to the specified node
@@ -105,16 +99,11 @@ impl RaftGrpcClient {
         let proto_request: ProtoAppendEntriesRequest = request.into();
         let mut request = Request::new(proto_request);
         request.set_timeout(RAFT_RPC_TIMEOUT);
-        let response = match client.append_entries(request).await {
-            Ok(response) => response,
-            Err(error) => {
-                self.close_connection(node_id).await;
-                return Err(error);
-            }
-        };
-
-        let rust_response: AppendEntriesResponse = response.into_inner().into();
-        Ok(rust_response)
+        let response = client.append_entries(request).await;
+        if response.is_err() {
+            self.close_connection(node_id).await;
+        }
+        Ok(response?.into_inner().into())
     }
 
     /// Send a client request to the specified node
@@ -129,105 +118,16 @@ impl RaftGrpcClient {
         let mut request = Request::new(proto_request);
         // The server deliberately waits up to two seconds for majority commit.
         request.set_timeout(CLIENT_REQUEST_TIMEOUT);
-        let response = match client.client_request(request).await {
-            Ok(response) => response,
-            Err(error) => {
-                self.close_connection(node_id).await;
-                return Err(error);
-            }
-        };
-
-        Ok(response.into_inner())
-    }
-
-    /// Send RequestVote RPCs to all other nodes in the cluster
-    /// Returns a vector of (node_id, result) pairs
-    pub async fn broadcast_request_vote(
-        &self,
-        request: RequestVoteRequest,
-    ) -> Vec<(NodeId, Result<RequestVoteResponse, Status>)> {
-        let other_nodes = self.config.get_other_nodes();
-        let mut results = Vec::new();
-
-        // Send requests concurrently to all nodes
-        let mut handles = Vec::new();
-
-        for node in other_nodes {
-            let node_id = node.node_id;
-            let request_clone = request.clone();
-            let client = self.clone();
-
-            let handle = tokio::spawn(async move {
-                let result = client.request_vote(node_id, request_clone).await;
-                (node_id, result)
-            });
-
-            handles.push(handle);
+        let response = client.client_request(request).await;
+        if response.is_err() {
+            self.close_connection(node_id).await;
         }
-
-        // Collect results
-        for handle in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    // Handle join error - this shouldn't normally happen
-                    error!("Task join error: {}", e);
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Send AppendEntries RPCs to specific nodes
-    /// Returns a vector of (node_id, result) pairs
-    pub async fn send_append_entries(
-        &self,
-        requests: Vec<(NodeId, AppendEntriesRequest)>,
-    ) -> Vec<(NodeId, Result<AppendEntriesResponse, Status>)> {
-        let mut results = Vec::new();
-        let mut handles = Vec::new();
-
-        // Send requests concurrently
-        for (node_id, request) in requests {
-            let client = self.clone();
-
-            let handle = tokio::spawn(async move {
-                let result = client.append_entries(node_id, request).await;
-                (node_id, result)
-            });
-
-            handles.push(handle);
-        }
-
-        // Collect results
-        for handle in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    error!("Task join error: {}", e);
-                }
-            }
-        }
-
-        results
+        Ok(response?.into_inner())
     }
 
     /// Close connection to a specific node (useful for handling connection errors)
     pub async fn close_connection(&self, node_id: NodeId) {
         let mut connections = self.connections.write().await;
         connections.remove(&node_id);
-    }
-
-    /// Close all connections
-    pub async fn close_all_connections(&self) {
-        let mut connections = self.connections.write().await;
-        connections.clear();
-    }
-
-    /// Get the number of active connections
-    pub async fn connection_count(&self) -> usize {
-        let connections = self.connections.read().await;
-        connections.len()
     }
 }

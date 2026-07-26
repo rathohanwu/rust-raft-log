@@ -1,6 +1,5 @@
 use super::*;
-use crate::consensus::RaftState;
-use crate::models::{ClusterConfig, EntryType, NodeInfo, ServerState};
+use crate::models::{ClusterConfig, EntryType};
 use tempfile::TempDir;
 
 /// Creates a test config using a temporary directory that gets cleaned up automatically.
@@ -18,38 +17,6 @@ fn create_test_config() -> (RaftLogConfig, TempDir) {
 
 fn create_test_entry(term: u64, payload: &str) -> LogEntry {
     LogEntry::new_with_type(term, 0, EntryType::Normal, payload.as_bytes().to_vec())
-}
-
-/// Creates a test cluster config using a temporary directory that gets cleaned up automatically.
-/// Use this for most tests where you don't need to inspect the files afterward.
-/// Returns both the cluster config and the TempDir (keep the TempDir alive to prevent cleanup).
-fn create_test_cluster_config() -> (ClusterConfig, TempDir) {
-    let temp_dir = TempDir::new().expect("Failed to create temp directory");
-    let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
-    let meta_path = temp_dir
-        .path()
-        .join("raft_state.meta")
-        .to_string_lossy()
-        .to_string();
-
-    // Create a 3-node cluster for testing
-    let nodes = vec![
-        NodeInfo::new(1, "127.0.0.1".to_string(), 8001),
-        NodeInfo::new(2, "127.0.0.1".to_string(), 8002),
-        NodeInfo::new(3, "127.0.0.1".to_string(), 8003),
-    ];
-
-    let cluster_config = ClusterConfig::new(
-        1, // This is node 1
-        nodes,
-        log_dir,
-        meta_path,
-        1024,       // 1KB segments for testing
-        1000,       // max_entries_per_query
-        (150, 300), // Election timeout range
-        50,         // Heartbeat interval
-    );
-    (cluster_config, temp_dir)
 }
 
 /// Creates a test config that uses a local directory for file inspection.
@@ -261,6 +228,83 @@ fn truncating_across_segments_removes_obsolete_files_before_reopen() {
         .filter(|entry| entry.file_name().to_string_lossy().ends_with(".dat"))
         .count();
     assert_eq!(segment_files, reopened.segment_count());
+}
+
+#[test]
+fn truncating_within_a_segment_recovers_after_reopen() {
+    let temp_dir = TempDir::new().expect("create temp directory");
+    let config = RaftLogConfig {
+        log_directory: temp_dir.path().join("logs"),
+        segment_size: 256,
+        max_entries_per_query: 10,
+    };
+
+    {
+        let mut log = RaftLog::new(config.clone()).expect("create log");
+        for index in 1..=5 {
+            log.append_entry(LogEntry::new_with_type(
+                1,
+                index,
+                EntryType::Normal,
+                vec![index as u8; 40],
+            ))
+            .expect("append original entry");
+        }
+        assert!(log.segment_count() >= 2);
+
+        assert!(log.truncate_from(2).expect("truncate in segment"));
+        log.append_entry(LogEntry::new_with_type(
+            2,
+            0,
+            EntryType::Normal,
+            b"replacement-2".to_vec(),
+        ))
+        .expect("append replacement 2");
+        log.append_entry(LogEntry::new_with_type(
+            2,
+            0,
+            EntryType::Normal,
+            b"replacement-3".to_vec(),
+        ))
+        .expect("append replacement 3");
+    }
+
+    let reopened = RaftLog::new(config).expect("reopen replacement log");
+    assert_eq!(reopened.len(), 3);
+    assert_eq!(reopened.get_entry(1).unwrap().term, 1);
+    assert_eq!(reopened.get_entry(2).unwrap().term, 2);
+    assert_eq!(reopened.get_entry(2).unwrap().payload, b"replacement-2");
+    assert_eq!(reopened.get_entry(3).unwrap().payload, b"replacement-3");
+    assert!(reopened.get_entry(4).is_none());
+}
+
+#[test]
+fn reopening_with_a_different_segment_size_preserves_existing_files() {
+    let temp_dir = TempDir::new().expect("create temp directory");
+    let log_directory = temp_dir.path().join("logs");
+    let original = RaftLogConfig {
+        log_directory: log_directory.clone(),
+        segment_size: 256,
+        max_entries_per_query: 10,
+    };
+
+    {
+        let mut log = RaftLog::new(original).expect("create log");
+        log.append_entry(LogEntry::new_with_type(
+            1,
+            0,
+            EntryType::Normal,
+            b"durable entry".to_vec(),
+        ))
+        .expect("append entry");
+    }
+
+    let mismatched = RaftLogConfig {
+        log_directory,
+        segment_size: 512,
+        max_entries_per_query: 10,
+    };
+    assert!(RaftLog::new(mismatched).is_err());
 }
 
 #[test]
@@ -704,153 +748,6 @@ fn test_entry_type_support_in_raft_log() {
         .expect("Should get last entry");
     assert_eq!(last_entry.entry_type, EntryType::Normal);
     assert_eq!(last_entry.term, 2);
-}
-
-#[test]
-fn test_raft_log_and_state_integration() {
-    use tempfile::TempDir;
-
-    let temp_dir = TempDir::new().expect("Failed to create temp directory");
-
-    // Create RaftLog
-    let (config, _log_temp_dir) = create_test_config();
-    let mut raft_log = RaftLog::new(config).expect("Failed to create RaftLog");
-
-    // Create RaftState
-    let state_path = temp_dir.path().join("raft_state.meta");
-    let mut raft_state = RaftState::new(&state_path).expect("Failed to create RaftState");
-
-    // Simulate a Raft scenario
-
-    // 1. Start as follower in term 0
-    assert_eq!(raft_state.get_server_state(), ServerState::Follower);
-    assert_eq!(raft_state.get_current_term(), 0);
-    assert_eq!(raft_log.len(), 0);
-
-    // 2. Receive vote request for term 1, vote for candidate 100
-    raft_state.start_new_term_as_follower(1);
-    assert!(raft_state.vote_for_candidate(100));
-
-    // 3. Become candidate in term 2
-    raft_state.start_new_term_as_candidate(2);
-    assert!(raft_state.vote_for_candidate(999)); // Vote for self
-
-    // 4. Become leader and start appending entries
-    raft_state.transition_to_state(ServerState::Leader);
-
-    // Append some log entries as leader
-    let entry1 = LogEntry::new_with_type(2, 0, EntryType::NoOp, vec![]); // Leader heartbeat
-    raft_log
-        .append_entry(entry1)
-        .expect("Failed to append NoOp entry");
-
-    let entry2 = LogEntry::new_with_type(2, 0, EntryType::Normal, "command1".as_bytes().to_vec());
-    raft_log
-        .append_entry(entry2)
-        .expect("Failed to append normal entry");
-
-    let entry3 = LogEntry::new_with_type(2, 0, EntryType::Normal, "command2".as_bytes().to_vec());
-    raft_log
-        .append_entry(entry3)
-        .expect("Failed to append normal entry");
-
-    // 5. Update commit and apply indices
-    raft_state.set_commit_index(3); // All entries committed
-    raft_state.set_last_applied(2); // Applied first two entries
-
-    // 6. Verify final state
-    let state_snapshot = raft_state.get_state_snapshot();
-    assert_eq!(state_snapshot.current_term, 2);
-    assert_eq!(state_snapshot.voted_for, Some(999));
-    assert_eq!(state_snapshot.server_state, ServerState::Leader);
-    assert_eq!(state_snapshot.commit_index, 3);
-    assert_eq!(state_snapshot.last_applied, 2);
-
-    // Verify log state
-    assert_eq!(raft_log.len(), 3);
-    assert_eq!(raft_log.last_index(), Some(3));
-
-    // Verify log entries
-    let log_entry1 = raft_log.get_entry(1).expect("Should get entry 1");
-    assert_eq!(log_entry1.entry_type, EntryType::NoOp);
-    assert_eq!(log_entry1.term, 2);
-
-    let log_entry2 = raft_log.get_entry(2).expect("Should get entry 2");
-    assert_eq!(log_entry2.entry_type, EntryType::Normal);
-    assert_eq!(log_entry2.payload, "command1".as_bytes());
-
-    let log_entry3 = raft_log.get_entry(3).expect("Should get entry 3");
-    assert_eq!(log_entry3.entry_type, EntryType::Normal);
-    assert_eq!(log_entry3.payload, "command2".as_bytes());
-
-    // 7. Test persistence by reloading state
-    drop(raft_state); // Close the state file
-
-    let reloaded_state = RaftState::from_existing(&state_path).expect("Failed to reload state");
-    let reloaded_snapshot = reloaded_state.get_state_snapshot();
-
-    // Verify state persisted correctly
-    assert_eq!(reloaded_snapshot.current_term, 2);
-    assert_eq!(reloaded_snapshot.voted_for, Some(999));
-    assert_eq!(reloaded_snapshot.server_state, ServerState::Follower);
-    assert_eq!(reloaded_snapshot.commit_index, 0);
-    assert_eq!(reloaded_snapshot.last_applied, 0);
-}
-
-#[test]
-fn test_cluster_config_integration() {
-    // Create cluster config for node 1 in a 3-node cluster
-    let (cluster_config, _temp_dir) = create_test_cluster_config();
-
-    // Verify cluster config properties
-    assert_eq!(cluster_config.node_id, 1);
-    assert_eq!(cluster_config.cluster_size(), 3);
-    assert_eq!(cluster_config.majority_size(), 2);
-    assert_eq!(cluster_config.get_address(), "127.0.0.1:8001");
-    assert_eq!(cluster_config.log_segment_size, 1024);
-    assert_eq!(cluster_config.max_entries_per_query, 1000);
-
-    // Verify this node's information
-    let this_node = cluster_config
-        .get_this_node()
-        .expect("Should find this node");
-    assert_eq!(this_node.node_id, 1);
-    assert_eq!(this_node.get_address(), "127.0.0.1:8001");
-
-    // Verify other nodes in cluster
-    let other_nodes = cluster_config.get_other_nodes();
-    assert_eq!(other_nodes.len(), 2);
-    assert_eq!(other_nodes[0].node_id, 2);
-    assert_eq!(other_nodes[0].get_address(), "127.0.0.1:8002");
-    assert_eq!(other_nodes[1].node_id, 3);
-    assert_eq!(other_nodes[1].get_address(), "127.0.0.1:8003");
-
-    // Verify we can find specific nodes
-    let node2 = cluster_config.get_node(2).expect("Should find node 2");
-    assert_eq!(node2.get_address(), "127.0.0.1:8002");
-
-    // Create RaftLog using cluster config
-    let raft_log_config = cluster_config.to_raft_log_config();
-    let mut raft_log = RaftLog::new(raft_log_config).expect("Failed to create RaftLog");
-
-    // Create RaftState using cluster config
-    let mut raft_state =
-        RaftState::new(&cluster_config.meta_file_path).expect("Failed to create RaftState");
-
-    // Test basic operations
-    let entry =
-        LogEntry::new_with_type(1, 0, EntryType::Normal, "test command".as_bytes().to_vec());
-    raft_log
-        .append_entry(entry)
-        .expect("Failed to append entry");
-
-    raft_state.set_current_term(1);
-    raft_state.set_server_state(ServerState::Leader);
-
-    // Verify everything works together
-    assert_eq!(raft_log.len(), 1);
-    assert_eq!(raft_state.get_current_term(), 1);
-    assert_eq!(raft_state.get_server_state(), ServerState::Leader);
 }
 
 #[test]

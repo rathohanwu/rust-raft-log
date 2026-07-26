@@ -4,11 +4,13 @@ use super::utils::{
     VERSION_OFFSET,
 };
 use crate::models::{AppendResult, EntryType, LogEntry};
-use byteorder::{LittleEndian, ReadBytesExt};
-use log::error;
 use memmap2::MmapMut;
 use std::io;
-use std::io::Cursor;
+
+const ENTRY_TERM_OFFSET: usize = 8;
+const ENTRY_INDEX_OFFSET: usize = 16;
+const ENTRY_TYPE_OFFSET: usize = 24;
+const ENTRY_HEADER_SIZE: usize = 25;
 
 /// Header for a log segment file.
 ///
@@ -59,7 +61,7 @@ impl LogFileSegment {
             let mut size_bytes = [0; 8];
             size_bytes.copy_from_slice(&self.buffer[position..size_end]);
             let entry_size = u64::from_le_bytes(size_bytes) as usize;
-            if entry_size < 25 {
+            if entry_size < ENTRY_HEADER_SIZE {
                 return false;
             }
             let Some(next_position) = position.checked_add(entry_size) else {
@@ -108,6 +110,12 @@ impl LogFileSegment {
         }
     }
 
+    pub(crate) fn next_index(&self) -> u64 {
+        self.get_last_index()
+            .map(|index| index + 1)
+            .unwrap_or_else(|| self.get_base_index())
+    }
+
     pub fn get_base_index(&self) -> u64 {
         MemoryMapUtil::read_u64(&self.buffer, BASE_INDEX_OFFSET)
     }
@@ -122,7 +130,7 @@ impl LogFileSegment {
 
     // Header setter methods
     fn set_magic(&mut self) {
-        MemoryMapUtil::write_vec_8(&mut self.buffer, MAGIC_OFFSET, &b"RAFT".to_vec());
+        MemoryMapUtil::write_vec_8(&mut self.buffer, MAGIC_OFFSET, b"RAFT");
     }
 
     fn set_version(&mut self, version: u32) {
@@ -146,7 +154,7 @@ impl LogFileSegment {
     }
 
     // Log entry operations
-    pub fn append_entry(&mut self, log_entry: LogEntry) -> AppendResult {
+    pub fn append_entry(&mut self, log_entry: &LogEntry) -> AppendResult {
         let start_append_position = self.get_start_append_position();
         let total_log_entry_size = log_entry.calculate_total_size();
 
@@ -154,7 +162,7 @@ impl LogFileSegment {
             return AppendResult::RotationNeeded;
         }
 
-        let next_start_append_position = self.write_payload(start_append_position, &log_entry);
+        let next_start_append_position = self.write_payload(start_append_position, log_entry);
         self.set_start_append_position(next_start_append_position);
         let entry_count = self.get_entry_count();
         self.set_entry_count(entry_count + 1);
@@ -163,14 +171,16 @@ impl LogFileSegment {
 
     pub fn truncate_from(&mut self, search_index: u64) -> bool {
         let base_index = self.get_base_index();
-        let last_index = self.get_last_index().unwrap_or(0);
-        let actual_index = search_index.checked_sub(base_index).map_or(0, |x| x + 1);
-        if search_index > last_index {
+        let Some(last_index) = self.get_last_index() else {
+            return false;
+        };
+        if search_index < base_index || search_index > last_index {
             return false;
         }
-        let truncate_from_position = self.find_start_append_position(actual_index);
+        let entries_to_keep = search_index - base_index;
+        let truncate_from_position = self.find_start_append_position(entries_to_keep + 1);
         self.set_start_append_position(truncate_from_position);
-        self.set_entry_count(search_index - base_index);
+        self.set_entry_count(entries_to_keep);
         true
     }
 
@@ -179,14 +189,26 @@ impl LogFileSegment {
         let start_position = start_position as usize;
         let total_payload_size = log_entry.calculate_total_size();
         MemoryMapUtil::write_u64(&mut self.buffer, start_position, total_payload_size);
-        MemoryMapUtil::write_u64(&mut self.buffer, start_position + 8, log_entry.term);
-        MemoryMapUtil::write_u64(&mut self.buffer, start_position + 16, log_entry.index);
+        MemoryMapUtil::write_u64(
+            &mut self.buffer,
+            start_position + ENTRY_TERM_OFFSET,
+            log_entry.term,
+        );
+        MemoryMapUtil::write_u64(
+            &mut self.buffer,
+            start_position + ENTRY_INDEX_OFFSET,
+            log_entry.index,
+        );
         MemoryMapUtil::write_u8(
             &mut self.buffer,
-            start_position + 24,
-            log_entry.entry_type.clone().into(),
+            start_position + ENTRY_TYPE_OFFSET,
+            log_entry.entry_type.into(),
         );
-        MemoryMapUtil::write_vec_8(&mut self.buffer, start_position + 25, &log_entry.payload);
+        MemoryMapUtil::write_vec_8(
+            &mut self.buffer,
+            start_position + ENTRY_HEADER_SIZE,
+            &log_entry.payload,
+        );
         start_position as u64 + total_payload_size
     }
 
@@ -195,43 +217,34 @@ impl LogFileSegment {
         let base_index = self.get_base_index();
         let actual_index = search_index.checked_sub(base_index)? + 1;
 
-        if actual_index <= 0 || actual_index > entry_count {
+        if actual_index > entry_count {
             return None;
         }
 
         let start_position = self.find_start_append_position(actual_index) as usize;
         let payload_size = MemoryMapUtil::read_u64(&self.buffer, start_position);
-        let term = MemoryMapUtil::read_u64(&self.buffer, start_position + 8);
-        let index = MemoryMapUtil::read_u64(&self.buffer, start_position + 16);
-        let entry_type_byte = MemoryMapUtil::read_u8(&self.buffer, start_position + 24);
+        let term = MemoryMapUtil::read_u64(&self.buffer, start_position + ENTRY_TERM_OFFSET);
+        let index = MemoryMapUtil::read_u64(&self.buffer, start_position + ENTRY_INDEX_OFFSET);
+        let entry_type_byte =
+            MemoryMapUtil::read_u8(&self.buffer, start_position + ENTRY_TYPE_OFFSET);
         let entry_type = EntryType::from(entry_type_byte);
 
         let payload = MemoryMapUtil::read_vec_8(
             &self.buffer,
-            start_position + 25,
-            (payload_size - 25) as usize,
+            start_position + ENTRY_HEADER_SIZE,
+            (payload_size - ENTRY_HEADER_SIZE as u64) as usize,
         );
 
         Some(LogEntry::new_with_type(term, index, entry_type, payload))
     }
 
     fn find_start_append_position(&self, index: u64) -> u64 {
-        let mut cursor = Cursor::new(&self.buffer[HEADER_SIZE..]);
-        let mut total_pay_load: u64 = HEADER_SIZE as u64;
-        for _i in 0..index - 1 {
-            let pay_load = cursor.read_u64::<LittleEndian>();
-            match pay_load {
-                Err(e) => {
-                    error!("Error reading payload size at index {}: {}", _i, e);
-                    panic!("Error reading payload size at index {}: {}", _i, e);
-                }
-                Ok(entry_size) => {
-                    total_pay_load += entry_size;
-                    cursor.set_position(total_pay_load - HEADER_SIZE as u64);
-                }
-            }
+        debug_assert!(index > 0, "entry positions are 1-based");
+        let mut position = HEADER_SIZE as u64;
+        for _ in 1..index {
+            position += MemoryMapUtil::read_u64(&self.buffer, position as usize);
         }
-        total_pay_load
+        position
     }
 }
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout, Duration};
 
-use raft_log::{ClusterConfig, NodeInfo, RaftGrpcClient, RaftGrpcServer, RaftNode, ServerState};
+use raft_log::{ClusterConfig, NodeInfo, RaftGrpcClient, RaftNode, RaftRuntime, ServerState};
 
 /// Comprehensive integration test that validates the complete Raft consensus lifecycle
 #[tokio::test]
@@ -79,9 +79,9 @@ async fn test_comprehensive_raft_lifecycle() {
     let raft_node3 = RaftNode::new(config3).expect("Failed to create RaftNode 3");
 
     // Create gRPC servers (timing is now configured in ClusterConfig)
-    let server1 = RaftGrpcServer::new(raft_node1);
-    let server2 = RaftGrpcServer::new(raft_node2);
-    let server3 = RaftGrpcServer::new(raft_node3);
+    let server1 = RaftRuntime::new(raft_node1);
+    let server2 = RaftRuntime::new(raft_node2);
+    let server3 = RaftRuntime::new(raft_node3);
 
     // Get references for monitoring
     let server1_node_view = server1.node_view();
@@ -91,15 +91,15 @@ async fn test_comprehensive_raft_lifecycle() {
     // Run each server in the background so this test can drive the cluster.
     let server_handle1 = tokio::spawn({
         let server = server1.clone();
-        async move { server.start().await.expect("Failed to start server 1") }
+        async move { server.serve().await.expect("Failed to start server 1") }
     });
     let server_handle2 = tokio::spawn({
         let server = server2.clone();
-        async move { server.start().await.expect("Failed to start server 2") }
+        async move { server.serve().await.expect("Failed to start server 2") }
     });
     let server_handle3 = tokio::spawn({
         let server = server3.clone();
-        async move { server.start().await.expect("Failed to start server 3") }
+        async move { server.serve().await.expect("Failed to start server 3") }
     });
 
     println!("🌐 Started 3 gRPC servers on ports 19001, 19002, 19003");
@@ -110,9 +110,9 @@ async fn test_comprehensive_raft_lifecycle() {
     // Helper function to find the current leader
     let find_leader = || -> Option<(u32, u64)> {
         let states = [
-            (1, server1_node_view.lock().unwrap()),
-            (2, server2_node_view.lock().unwrap()),
-            (3, server3_node_view.lock().unwrap()),
+            (1, &server1_node_view),
+            (2, &server2_node_view),
+            (3, &server3_node_view),
         ];
 
         let leaders: Vec<(u32, u64)> = states
@@ -137,20 +137,17 @@ async fn test_comprehensive_raft_lifecycle() {
     let get_all_log_info = || -> HashMap<u32, (u64, u64, u64)> {
         let mut info = HashMap::new();
 
-        let node1 = server1_node_view.lock().unwrap();
+        let node1 = &server1_node_view;
         let (last_index1, last_term1) = node1.get_last_log_info();
         info.insert(1, (node1.get_log_length(), last_index1, last_term1));
-        drop(node1);
 
-        let node2 = server2_node_view.lock().unwrap();
+        let node2 = &server2_node_view;
         let (last_index2, last_term2) = node2.get_last_log_info();
         info.insert(2, (node2.get_log_length(), last_index2, last_term2));
-        drop(node2);
 
-        let node3 = server3_node_view.lock().unwrap();
+        let node3 = &server3_node_view;
         let (last_index3, last_term3) = node3.get_last_log_info();
         info.insert(3, (node3.get_log_length(), last_index3, last_term3));
-        drop(node3);
 
         info
     };
@@ -180,9 +177,9 @@ async fn test_comprehensive_raft_lifecycle() {
     let states = timeout(Duration::from_secs(5), async {
         loop {
             let states = [
-                (1, server1_node_view.lock().unwrap().get_server_state()),
-                (2, server2_node_view.lock().unwrap().get_server_state()),
-                (3, server3_node_view.lock().unwrap().get_server_state()),
+                (1, server1_node_view.get_server_state()),
+                (2, server2_node_view.get_server_state()),
+                (3, server3_node_view.get_server_state()),
             ];
             let leaders = states
                 .iter()
@@ -317,28 +314,28 @@ async fn test_comprehensive_raft_lifecycle() {
             // Check remaining nodes for new leader
             let remaining_states = match initial_leader_id {
                 1 => {
-                    let node2 = server2_node_view.lock().unwrap();
+                    let node2 = &server2_node_view;
                     let node2_state = node2.get_server_state();
                     let node2_term = node2.get_current_term();
-                    let node3 = server3_node_view.lock().unwrap();
+                    let node3 = &server3_node_view;
                     let node3_state = node3.get_server_state();
                     let node3_term = node3.get_current_term();
                     vec![(2, node2_state, node2_term), (3, node3_state, node3_term)]
                 }
                 2 => {
-                    let node1 = server1_node_view.lock().unwrap();
+                    let node1 = &server1_node_view;
                     let node1_state = node1.get_server_state();
                     let node1_term = node1.get_current_term();
-                    let node3 = server3_node_view.lock().unwrap();
+                    let node3 = &server3_node_view;
                     let node3_state = node3.get_server_state();
                     let node3_term = node3.get_current_term();
                     vec![(1, node1_state, node1_term), (3, node3_state, node3_term)]
                 }
                 3 => {
-                    let node1 = server1_node_view.lock().unwrap();
+                    let node1 = &server1_node_view;
                     let node1_state = node1.get_server_state();
                     let node1_term = node1.get_current_term();
-                    let node2 = server2_node_view.lock().unwrap();
+                    let node2 = &server2_node_view;
                     let node2_state = node2.get_server_state();
                     let node2_term = node2.get_current_term();
                     vec![(1, node1_state, node1_term), (2, node2_state, node2_term)]
@@ -427,43 +424,37 @@ async fn test_comprehensive_raft_lifecycle() {
     let remaining_log_info = match initial_leader_id {
         1 => {
             let mut info = HashMap::new();
-            let node2 = server2_node_view.lock().unwrap();
+            let node2 = &server2_node_view;
             let (last_index2, last_term2) = node2.get_last_log_info();
             info.insert(2, (node2.get_log_length(), last_index2, last_term2));
-            drop(node2);
 
-            let node3 = server3_node_view.lock().unwrap();
+            let node3 = &server3_node_view;
             let (last_index3, last_term3) = node3.get_last_log_info();
             info.insert(3, (node3.get_log_length(), last_index3, last_term3));
-            drop(node3);
 
             info
         }
         2 => {
             let mut info = HashMap::new();
-            let node1 = server1_node_view.lock().unwrap();
+            let node1 = &server1_node_view;
             let (last_index1, last_term1) = node1.get_last_log_info();
             info.insert(1, (node1.get_log_length(), last_index1, last_term1));
-            drop(node1);
 
-            let node3 = server3_node_view.lock().unwrap();
+            let node3 = &server3_node_view;
             let (last_index3, last_term3) = node3.get_last_log_info();
             info.insert(3, (node3.get_log_length(), last_index3, last_term3));
-            drop(node3);
 
             info
         }
         3 => {
             let mut info = HashMap::new();
-            let node1 = server1_node_view.lock().unwrap();
+            let node1 = &server1_node_view;
             let (last_index1, last_term1) = node1.get_last_log_info();
             info.insert(1, (node1.get_log_length(), last_index1, last_term1));
-            drop(node1);
 
-            let node2 = server2_node_view.lock().unwrap();
+            let node2 = &server2_node_view;
             let (last_index2, last_term2) = node2.get_last_log_info();
             info.insert(2, (node2.get_log_length(), last_index2, last_term2));
-            drop(node2);
 
             info
         }
@@ -508,8 +499,8 @@ async fn test_comprehensive_raft_lifecycle() {
     let remaining_leader = match initial_leader_id {
         1 => {
             let states = [
-                (2, server2_node_view.lock().unwrap().get_server_state()),
-                (3, server3_node_view.lock().unwrap().get_server_state()),
+                (2, server2_node_view.get_server_state()),
+                (3, server3_node_view.get_server_state()),
             ];
 
             let leaders: Vec<u32> = states
@@ -532,8 +523,8 @@ async fn test_comprehensive_raft_lifecycle() {
         }
         2 => {
             let states = [
-                (1, server1_node_view.lock().unwrap().get_server_state()),
-                (3, server3_node_view.lock().unwrap().get_server_state()),
+                (1, server1_node_view.get_server_state()),
+                (3, server3_node_view.get_server_state()),
             ];
 
             let leaders: Vec<u32> = states
@@ -556,8 +547,8 @@ async fn test_comprehensive_raft_lifecycle() {
         }
         3 => {
             let states = [
-                (1, server1_node_view.lock().unwrap().get_server_state()),
-                (2, server2_node_view.lock().unwrap().get_server_state()),
+                (1, server1_node_view.get_server_state()),
+                (2, server2_node_view.get_server_state()),
             ];
 
             let leaders: Vec<u32> = states

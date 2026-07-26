@@ -364,13 +364,13 @@ fn test_vote_for_candidate() {
 }
 
 #[test]
-fn test_transition_to_state() {
+fn test_server_state_setter() {
     let (mut raft_state, _temp_dir) = create_test_state_file();
 
-    raft_state.transition_to_state(ServerState::Candidate);
+    raft_state.set_server_state(ServerState::Candidate);
     assert_eq!(raft_state.get_server_state(), ServerState::Candidate);
 
-    raft_state.transition_to_state(ServerState::Leader);
+    raft_state.set_server_state(ServerState::Leader);
     assert_eq!(raft_state.get_server_state(), ServerState::Leader);
 }
 
@@ -533,7 +533,7 @@ fn test_comprehensive_state_operations() {
     assert!(raft_state.vote_for_candidate(999)); // Vote for self
 
     // Become leader
-    raft_state.transition_to_state(ServerState::Leader);
+    raft_state.set_server_state(ServerState::Leader);
 
     // Process some log entries
     raft_state.set_commit_index(10);

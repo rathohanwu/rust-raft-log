@@ -25,14 +25,7 @@ async fn three_node_replication_converges() {
         let commit_indexes: Vec<_> = cluster
             .node_ids()
             .into_iter()
-            .map(|id| {
-                cluster
-                    .node_view(id)
-                    .lock()
-                    .unwrap()
-                    .get_state()
-                    .commit_index
-            })
+            .map(|id| cluster.node_view(id).get_state().commit_index)
             .collect();
         let committed_prefix = *commit_indexes.iter().min().unwrap();
         let logs: Vec<_> = cluster

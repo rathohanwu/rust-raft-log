@@ -1,8 +1,8 @@
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 
 use tokio::sync::oneshot;
 
-use super::actor::Command;
+use super::actor::{Command, Event};
 use crate::consensus::RaftStateSnapshot;
 use crate::models::{
     AppendEntriesRequest, AppendEntriesResponse, NodeId, RequestVoteRequest, RequestVoteResponse,
@@ -60,74 +60,70 @@ impl RaftHandle {
     pub fn cancel_client_request(&self, request_id: u64) {
         let _ = self
             .command_tx
-            .send(Command::CancelClientRequest { request_id });
+            .send(Command::Event(Event::CancelClientRequest { request_id }));
     }
 
     pub async fn request_vote(
         &self,
-        rpc_id: u64,
         request: RequestVoteRequest,
     ) -> Result<RequestVoteResponse, String> {
-        let (response, rx) = oneshot::channel();
-        self.command_tx
-            .send(Command::RequestVote {
-                rpc_id,
-                request,
-                response,
-            })
-            .map_err(|_| "Raft actor is shut down".to_string())?;
-        rx.await
-            .map_err(|_| "Raft actor dropped vote reply".to_string())
+        self.call(
+            |reply| Command::Event(Event::RequestVote { request, reply }),
+            "Raft actor dropped vote reply",
+        )
+        .await
     }
 
     pub async fn append_entries(
         &self,
-        rpc_id: u64,
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, String> {
-        let (response, rx) = oneshot::channel();
-        self.command_tx
-            .send(Command::AppendEntries {
-                rpc_id,
-                request,
-                response,
-            })
-            .map_err(|_| "Raft actor is shut down".to_string())?;
-        rx.await
-            .map_err(|_| "Raft actor dropped append reply".to_string())
+        self.call(
+            |reply| Command::Event(Event::AppendEntries { request, reply }),
+            "Raft actor dropped append reply",
+        )
+        .await
     }
 
     pub async fn propose(&self, request_id: u64, payload: Vec<u8>) -> ClientResult {
-        let (response, rx) = oneshot::channel();
-        self.command_tx
-            .send(Command::ClientProposal {
-                request_id,
-                payload,
-                response,
-            })
-            .map_err(|_| "Raft actor is shut down".to_string())?;
-        rx.await
-            .map_err(|_| "Raft actor dropped proposal reply".to_string())?
+        self.call(
+            |reply| {
+                Command::Event(Event::ClientProposal {
+                    request_id,
+                    payload,
+                    reply,
+                })
+            },
+            "Raft actor dropped proposal reply",
+        )
+        .await?
     }
-    pub fn node_view(&self) -> Arc<Mutex<RaftNodeView>> {
-        Arc::new(Mutex::new(RaftNodeView {
+    pub fn node_view(&self) -> RaftNodeView {
+        RaftNodeView {
             raft_handle: self.clone(),
-        }))
+        }
     }
-    fn view(&self) -> Option<NodeViewData> {
-        let (tx, rx) = mpsc::channel();
-        self.command_tx.send(Command::Query { response: tx }).ok()?;
+    async fn call<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<T>) -> Command,
+        dropped: &'static str,
+    ) -> Result<T, String> {
+        let (reply, rx) = oneshot::channel();
+        self.command_tx
+            .send(command(reply))
+            .map_err(|_| "Raft actor is shut down".to_string())?;
+        rx.await.map_err(|_| dropped.to_string())
+    }
+    fn query<T>(&self, command: impl FnOnce(mpsc::Sender<T>) -> Command) -> Option<T> {
+        let (reply, rx) = mpsc::channel();
+        self.command_tx.send(command(reply)).ok()?;
         rx.recv().ok()
     }
+    fn view(&self) -> Option<NodeViewData> {
+        self.query(|response| Command::Query { response })
+    }
     fn entry(&self, index: u64) -> Option<crate::models::LogEntry> {
-        let (tx, rx) = mpsc::channel();
-        self.command_tx
-            .send(Command::QueryEntry {
-                index,
-                response: tx,
-            })
-            .ok()?;
-        rx.recv().ok().flatten()
+        self.query(|response| Command::QueryEntry { index, response })?
     }
 }
 

@@ -23,10 +23,8 @@ async fn e2e_single_elect_write_and_apply() {
         ));
     }
     let node = cluster.node_view(1);
-    let node = node.lock().unwrap();
     assert_eq!(node.get_server_state(), ServerState::Leader);
     assert_eq!(node.get_state().commit_index, node.get_state().last_applied);
-    drop(node);
     assert_eq!(
         cluster.arithmetic_state(1),
         ArithmeticState {
@@ -42,13 +40,8 @@ async fn e2e_single_elect_write_and_apply() {
 async fn e2e_single_persistence_offline_then_online() {
     let mut cluster = TestCluster::start(1).await;
     cluster.wait_for_leader(Duration::from_secs(3)).await;
-    let expected_term = cluster.node_view(1).lock().unwrap().get_current_term();
-    let commit_index = cluster
-        .node_view(1)
-        .lock()
-        .unwrap()
-        .get_state()
-        .commit_index;
+    let expected_term = cluster.node_view(1).get_current_term();
+    let commit_index = cluster.node_view(1).get_state().commit_index;
     let expected_log = cluster.committed_log(1, commit_index);
 
     cluster.kill(1).await;
@@ -66,7 +59,6 @@ async fn e2e_single_persistence_offline_then_online() {
     cluster.restart(1).await;
     cluster.wait_for_leader(Duration::from_secs(3)).await;
     let node = cluster.node_view(1);
-    let node = node.lock().unwrap();
     assert!(node.get_current_term() >= expected_term);
     for expected in expected_log {
         assert_eq!(
@@ -74,20 +66,11 @@ async fn e2e_single_persistence_offline_then_online() {
             expected
         );
     }
-    drop(node);
     assert!(matches!(
         cluster.client_write(arithmetic_command("add", 7)).await,
         ClientOutcome::Committed { .. }
     ));
-    assert!(
-        cluster
-            .node_view(1)
-            .lock()
-            .unwrap()
-            .get_state()
-            .last_applied
-            > 0
-    );
+    assert!(cluster.node_view(1).get_state().last_applied > 0);
     assert_eq!(
         cluster.arithmetic_state(1),
         ArithmeticState {

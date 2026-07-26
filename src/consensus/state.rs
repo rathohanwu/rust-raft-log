@@ -1,12 +1,16 @@
 use crate::models::{NodeId, RaftStateError, ServerState};
 use crate::storage::mmap_utils::MemoryMapUtil;
-use crate::storage::utils::create_memory_mapped_file;
+use crate::storage::utils::{create_new_memory_mapped_file, open_existing_memory_mapped_file};
 use memmap2::MmapMut;
 use std::path::Path;
 
 /// Header size for RaftState file (magic + version + data fields)
 /// Note: Only persistent state is stored - volatile state is kept in memory only
 const RAFT_STATE_HEADER_SIZE: usize = 20;
+const MAGIC_OFFSET: usize = 0;
+const VERSION_OFFSET: usize = 4;
+const TERM_OFFSET: usize = 8;
+const VOTED_FOR_OFFSET: usize = 16;
 
 /// Magic number for RaftState files
 const RAFT_STATE_MAGIC: u32 = 0x52415354; // "RAST" in ASCII
@@ -39,13 +43,8 @@ pub struct RaftState {
 impl RaftState {
     /// Creates a new RaftState with default values
     pub fn new<P: AsRef<Path>>(file_path: P) -> Result<Self, RaftStateError> {
-        let path_str = file_path
-            .as_ref()
-            .to_str()
-            .ok_or_else(|| RaftStateError::StateFileError("Invalid UTF-8 path".to_string()))?;
-
-        let buffer =
-            create_memory_mapped_file(path_str, RAFT_STATE_HEADER_SIZE as u64).map_err(|e| {
+        let buffer = create_new_memory_mapped_file(file_path, RAFT_STATE_HEADER_SIZE as u64)
+            .map_err(|e| {
                 RaftStateError::StateFileError(format!("Failed to create state file: {}", e))
             })?;
 
@@ -61,13 +60,8 @@ impl RaftState {
 
     /// Loads existing RaftState from file
     pub fn from_existing<P: AsRef<Path>>(file_path: P) -> Result<Self, RaftStateError> {
-        let path_str = file_path
-            .as_ref()
-            .to_str()
-            .ok_or_else(|| RaftStateError::StateFileError("Invalid UTF-8 path".to_string()))?;
-
-        let buffer =
-            create_memory_mapped_file(path_str, RAFT_STATE_HEADER_SIZE as u64).map_err(|e| {
+        let buffer = open_existing_memory_mapped_file(file_path, RAFT_STATE_HEADER_SIZE as u64)
+            .map_err(|e| {
                 RaftStateError::StateFileError(format!("Failed to open state file: {}", e))
             })?;
 
@@ -84,12 +78,12 @@ impl RaftState {
     /// Initializes a new state file with default values
     fn initialize_new_state(&mut self) {
         // Write header
-        MemoryMapUtil::write_u32(&mut self.buffer, 0, RAFT_STATE_MAGIC);
-        MemoryMapUtil::write_u32(&mut self.buffer, 4, RAFT_STATE_VERSION);
+        MemoryMapUtil::write_u32(&mut self.buffer, MAGIC_OFFSET, RAFT_STATE_MAGIC);
+        MemoryMapUtil::write_u32(&mut self.buffer, VERSION_OFFSET, RAFT_STATE_VERSION);
 
         // Initialize persistent state with default values
-        MemoryMapUtil::write_u64(&mut self.buffer, 8, 0); // current_term = 0
-        MemoryMapUtil::write_u32(&mut self.buffer, 16, 0); // voted_for = None (0)
+        MemoryMapUtil::write_u64(&mut self.buffer, TERM_OFFSET, 0); // current_term = 0
+        MemoryMapUtil::write_u32(&mut self.buffer, VOTED_FOR_OFFSET, 0); // voted_for = None (0)
 
         // A freshly initialized state file is also persistent state.
         self.flush().expect("failed to flush initial Raft state");
@@ -100,7 +94,7 @@ impl RaftState {
 
     /// Validates the header of an existing state file
     fn validate_header(&self) -> Result<(), RaftStateError> {
-        let magic = MemoryMapUtil::read_u32(&self.buffer, 0);
+        let magic = MemoryMapUtil::read_u32(&self.buffer, MAGIC_OFFSET);
         if magic != RAFT_STATE_MAGIC {
             return Err(RaftStateError::CorruptedState(format!(
                 "Invalid magic number: expected {}, got {}",
@@ -108,7 +102,7 @@ impl RaftState {
             )));
         }
 
-        let version = MemoryMapUtil::read_u32(&self.buffer, 4);
+        let version = MemoryMapUtil::read_u32(&self.buffer, VERSION_OFFSET);
         if version != RAFT_STATE_VERSION {
             return Err(RaftStateError::CorruptedState(format!(
                 "Unsupported version: expected {}, got {}",
@@ -121,17 +115,17 @@ impl RaftState {
 
     /// Gets the current term
     pub fn get_current_term(&self) -> u64 {
-        MemoryMapUtil::read_u64(&self.buffer, 8)
+        MemoryMapUtil::read_u64(&self.buffer, TERM_OFFSET)
     }
 
     /// Sets the current term
     pub fn set_current_term(&mut self, term: u64) {
-        MemoryMapUtil::write_u64(&mut self.buffer, 8, term);
+        MemoryMapUtil::write_u64(&mut self.buffer, TERM_OFFSET, term);
     }
 
     /// Gets the NodeId of the candidate voted for in current term (None if no vote cast)
     pub fn get_voted_for(&self) -> Option<NodeId> {
-        let voted_for = MemoryMapUtil::read_u32(&self.buffer, 16);
+        let voted_for = MemoryMapUtil::read_u32(&self.buffer, VOTED_FOR_OFFSET);
         if voted_for == 0 {
             None
         } else {
@@ -142,7 +136,7 @@ impl RaftState {
     /// Sets the NodeId of the candidate voted for in current term (None to clear vote)
     pub fn set_voted_for(&mut self, node_id: Option<NodeId>) {
         let value = node_id.unwrap_or(0);
-        MemoryMapUtil::write_u32(&mut self.buffer, 16, value);
+        MemoryMapUtil::write_u32(&mut self.buffer, VOTED_FOR_OFFSET, value);
     }
 
     /// Persists currentTerm and votedFor. Call this before replying to an RPC
@@ -190,15 +184,13 @@ impl RaftState {
 
     /// Atomically updates term, clears voted_for, and transitions to candidate
     pub fn start_new_term_as_candidate(&mut self, new_term: u64) {
-        self.set_current_term(new_term);
-        self.set_voted_for(None);
+        self.start_new_term(new_term);
         self.set_server_state(ServerState::Candidate);
     }
 
     /// Atomically updates term, clears voted_for, and transitions to follower
     pub fn start_new_term_as_follower(&mut self, new_term: u64) {
-        self.set_current_term(new_term);
-        self.set_voted_for(None);
+        self.start_new_term(new_term);
         self.set_server_state(ServerState::Follower);
     }
 
@@ -216,11 +208,6 @@ impl RaftState {
                 existing_vote == candidate_id
             }
         }
-    }
-
-    /// Transitions to a new server state
-    pub fn transition_to_state(&mut self, new_state: ServerState) {
-        self.set_server_state(new_state);
     }
 
     /// Gets a snapshot of all current state values

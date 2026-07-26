@@ -2,7 +2,7 @@ use clap::Parser;
 use log::{error, info};
 use std::process;
 
-use raft_log::{testkit::ArithmeticStateMachine, RaftGrpcServer, RaftNode, YamlClusterConfig};
+use raft_log::{testkit::ArithmeticStateMachine, RaftNode, RaftRuntime, YamlClusterConfig};
 
 #[derive(Parser)]
 #[command(name = "raft-node-test")]
@@ -42,5 +42,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     info!("Starting arithmetic test node {}", args.node_id);
-    RaftGrpcServer::new(node).start().await
+    RaftRuntime::new(node).serve().await
 }
