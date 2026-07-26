@@ -1,5 +1,7 @@
 # Plan: Dockerized end-to-end testing for the Raft cluster
 
+> **Audience:** maintainers planning future Docker test infrastructure. This is a human-facing design document, not an executable runbook.
+
 ## 1. Goal
 
 Stand up a **segregated, reproducible environment** where each Raft node runs as
